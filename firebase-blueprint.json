@@ -1,0 +1,129 @@
+{
+  "entities": {
+    "Folder": {
+      "title": "GDrive Folder",
+      "description": "A Google Drive folder that is indexed for the knowledge base.",
+      "type": "object",
+      "properties": {
+        "folderId": { "type": "string", "description": "The Google Drive folder ID." },
+        "name": { "type": "string", "description": "The name of the folder." },
+        "indexedAt": { "type": "string", "format": "date-time", "description": "When the folder was last indexed." },
+        "status": { "type": "string", "enum": ["pending", "indexing", "completed", "error"], "description": "The indexing status." },
+        "unit": { "type": "string", "description": "Optional unit parameter to scope this folder." },
+        "persona": { "type": "string", "description": "Optional persona ID to scope this folder to a specific character." }
+      },
+      "required": ["folderId", "name", "status"]
+    },
+    "DocumentChunk": {
+      "title": "Document Chunk",
+      "description": "A chunk of text from an indexed document with its embedding.",
+      "type": "object",
+      "properties": {
+        "folderId": { "type": "string", "description": "The source folder ID." },
+        "fileId": { "type": "string", "description": "The source GDrive file ID." },
+        "fileName": { "type": "string", "description": "The name of the source file." },
+        "text": { "type": "string", "description": "The text content of the chunk." },
+        "embedding": { "type": "array", "description": "The vector embedding of the chunk." },
+        "unit": { "type": "string", "description": "Optional unit parameter for scoping." },
+        "persona": { "type": "string", "description": "Optional persona ID for character-specific knowledge." }
+      },
+      "required": ["folderId", "fileId", "text", "embedding"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "A single message in a chat history.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The user ID who owns this message." },
+        "role": { "type": "string", "enum": ["user", "model"], "description": "The role of the sender." },
+        "parts": { "type": "array", "description": "The message parts (text)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the message was sent." },
+        "unit": { "type": "string", "description": "The unit context." },
+        "sources": { "type": "array", "description": "Optional sources cited by the model." },
+        "files": { "type": "array", "description": "Metadata about files attached." }
+      },
+      "required": ["userId", "role", "parts", "createdAt"]
+    },
+    "FeedbackTheme": {
+      "title": "Feedback Theme",
+      "description": "A theme for creative feedback with a specific prompt.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the theme (e.g., Photography)." },
+        "prompt": { "type": "string", "description": "The prompt text for the AI." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the theme was created." }
+      },
+      "required": ["name", "prompt", "createdAt"]
+    },
+    "MoodleUnit": {
+      "title": "Moodle Unit",
+      "description": "A Moodle course unit that has been catalogued.",
+      "type": "object",
+      "properties": {
+        "unitCode": { "type": "string", "description": "The unit code (e.g., PH4APH0925)." },
+        "courseId": { "type": "number", "description": "The Moodle course ID." },
+        "fullname": { "type": "string", "description": "The full name of the course." },
+        "cataloguedAt": { "type": "string", "format": "date-time", "description": "When the unit was last catalogued." },
+        "status": { "type": "string", "enum": ["pending", "cataloguing", "completed", "error"], "description": "The cataloguing status." }
+      },
+      "required": ["unitCode", "courseId", "fullname", "status"]
+    },
+    "Setting": {
+      "title": "Application Setting",
+      "description": "A global application configuration setting.",
+      "type": "object",
+      "properties": {
+        "value": { "type": "number", "description": "The value of the setting." }
+      },
+      "required": ["value"]
+    },
+    "DailyStats": {
+      "title": "Daily Stats",
+      "description": "Counters for daily usage.",
+      "type": "object",
+      "properties": {
+        "count": { "type": "number", "description": "The number of messages sent today." },
+        "date": { "type": "string", "description": "The date in YYYY-MM-DD format." }
+      },
+      "required": ["count", "date"]
+    },
+    "Persona": {
+      "title": "AI Persona",
+      "description": "A specific character or role for the AI to adopt.",
+      "type": "object",
+      "properties": {
+        "persona_id": { "type": "string", "description": "The unique ID of the persona." },
+        "display_name": { "type": "string", "description": "The public name of the persona." },
+        "system_prompt": { "type": "string", "description": "The dynamic instructions for the AI." },
+        "greeting_message": { "type": "string", "description": "Optional custom welcome message." },
+        "icon": { "type": "string", "description": "Optional lucide icon name." }
+      },
+      "required": ["persona_id", "display_name", "system_prompt"]
+    },
+    "StudySchedule": {
+      "title": "Study Schedule",
+      "description": "A generated study planner schedule for a course unit.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The student ID who owns this schedule." },
+        "unit": { "type": "string", "description": "The course unit code." },
+        "projectNumber": { "type": "string", "description": "Project or Part Number (1-10)." },
+        "weeks": { "type": "number", "description": "Weeks to complete." },
+        "content": { "type": "string", "description": "The markdown content of the report." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the schedule was created." }
+      },
+      "required": ["userId", "unit", "projectNumber", "weeks", "content", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/folders/{folderId}": { "schema": "Folder", "description": "Indexed GDrive folders." },
+    "/chunks/{chunkId}": { "schema": "DocumentChunk", "description": "Vector chunks for search." },
+    "/chat_history/{msgId}": { "schema": "ChatMessage", "description": "Flat chat history messages." },
+    "/feedbackThemes/{themeId}": { "schema": "FeedbackTheme", "description": "Themes for creative feedback." },
+    "/moodleUnits/{unitId}": { "schema": "MoodleUnit", "description": "Catalogued Moodle units." },
+    "/settings/{settingId}": { "schema": "Setting", "description": "Global application settings." },
+    "/stats/{statId}": { "schema": "DailyStats", "description": "Daily usage statistics." },
+    "/personas/{personaId}": { "schema": "Persona", "description": "AI Persona configurations." },
+    "/study_schedules/{scheduleId}": { "schema": "StudySchedule", "description": "Generated study schedules for Students." }
+  }
+}

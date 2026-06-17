@@ -1,0 +1,5 @@
+{
+  "name": "Lumen - OCA Creative Arts Chatbot",
+  "description": "A multimodal chatbot for the Open College of the Arts that answers questions based on a Google Drive knowledge base and provides creative feedback.",
+  "requestFramePermissions": ["camera", "microphone"]
+}

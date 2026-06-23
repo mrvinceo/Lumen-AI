@@ -10,13 +10,19 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import cookieParser from "cookie-parser";
 import AdmZip from "adm-zip";
 import mammoth from "mammoth";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
-// const pdf = require("pdf-parse"); // Removed as we use Gemini for PDF extraction now
-const firebaseConfig = require("./firebase-applet-config.json");
+import fs from "fs";
+import crypto from "crypto";
 
 dotenv.config();
+
+// Load firebase-applet-config.json securely in both ESM and CJS modes
+let firebaseConfig: any = {};
+try {
+  const configFileContent = fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8");
+  firebaseConfig = JSON.parse(configFileContent);
+} catch (err) {
+  console.warn("Failed to load firebase-applet-config.json:", err);
+}
 
 // Initialize Firebase Admin
 if (firebaseConfig.projectId) {
@@ -30,9 +36,6 @@ if (admin.apps.length === 0) {
   });
 }
 
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Helper for fetch with exponential backoff on 429s
 async function fetchWithRetry(url: string, options: any, maxRetries = 2) {
@@ -48,6 +51,52 @@ async function fetchWithRetry(url: string, options: any, maxRetries = 2) {
     }
     return res;
   }
+}
+
+// Helper to extract non-standard Moodle/WordPress installation subpaths (e.g. "testmoodle")
+function extractSubpath(urlStr: string): string {
+  if (!urlStr) return "";
+  try {
+    const url = new URL(urlStr);
+    if (url.hostname === "learn.oca.ac.uk" || url.hostname === "www.oca.ac.uk") {
+      const parts = url.pathname.split("/").filter(Boolean);
+      const standardFolders = [
+        "mod", "course", "admin", "lib", "webservice", "user", 
+        "grade", "theme", "local", "auth", "login", "blocks", 
+        "wp-content", "wp-includes", "uploads"
+      ];
+      if (parts.length > 0 && !standardFolders.includes(parts[0])) {
+        return parts[0];
+      }
+    }
+  } catch (e) {
+    // Ignore invalid URLs
+  }
+  return "";
+}
+
+// Helper to extract the public domain, respecting reverse proxies and defaulting correctly for OCA production
+function getPublicHost(req: any): string {
+  let host = req.headers["x-forwarded-host"] || req.headers["host"] || req.get("host") || "";
+  
+  if (typeof host === "string") {
+    if (host.includes(",")) {
+      host = host.split(",")[0].trim();
+    }
+  }
+
+  const hostname = String(host).toLowerCase();
+
+  // If we find localhost / local container addresses, check if referrer is OCA, override to lumen.oca.ac.uk
+  if (!hostname || hostname.includes("localhost") || hostname.includes("127.0.0.1") || hostname.includes("3000")) {
+    const referer = safeString(req.headers.referer || "");
+    if (referer.includes("oca.ac.uk") || referer.includes("moodle")) {
+      return "lumen.oca.ac.uk";
+    }
+    return "lumen.oca.ac.uk";
+  }
+
+  return host;
 }
 
 // Aggressive API Key Lookup
@@ -96,12 +145,587 @@ function getDiagnostics() {
   }).join(", ") || "No relevant keys found";
 }
 
+const PRIVATE_KEY_PATH = path.join(process.cwd(), "lti_private_key.pem");
+const PUBLIC_KEY_PATH = path.join(process.cwd(), "lti_public_key.pem");
+
+let privateKeyPem = "";
+let publicKeyPem = "";
+
+function initializeKeys() {
+  try {
+    if (fs.existsSync(PRIVATE_KEY_PATH) && fs.existsSync(PUBLIC_KEY_PATH)) {
+      privateKeyPem = fs.readFileSync(PRIVATE_KEY_PATH, "utf8");
+      publicKeyPem = fs.readFileSync(PUBLIC_KEY_PATH, "utf8");
+      console.log("Loaded existing LTI RSA keypair from disk.");
+    } else {
+      console.log("Generating new LTI RSA keypair...");
+      const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        publicKeyEncoding: {
+          type: "spki",
+          format: "pem"
+        },
+        privateKeyEncoding: {
+          type: "pkcs8",
+          format: "pem"
+        }
+      });
+      privateKeyPem = privateKey;
+      publicKeyPem = publicKey;
+      fs.writeFileSync(PRIVATE_KEY_PATH, privateKey, "utf8");
+      fs.writeFileSync(PUBLIC_KEY_PATH, publicKey, "utf8");
+      console.log("Generated and saved new LTI RSA keypair.");
+    }
+  } catch (error) {
+    console.error("Failed to initialize LTI keys:", error);
+  }
+}
+
+function safeString(val: any, defaultVal = ""): string {
+  if (typeof val === "string") return val;
+  if (Array.isArray(val) && val.length > 0) {
+    return safeString(val[0], defaultVal);
+  }
+  return defaultVal;
+}
+
 async function startServer() {
+  // Initialize LTI keys on startup
+  initializeKeys();
+
   const app = express();
-  const PORT = 3000;
+  app.set("trust proxy", true);
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(cookieParser());
   app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+  // LTI 1.3 OIDC Login Initiation (Initiate Login Endpoint)
+  app.all("/lti/login", (req, res) => {
+    const iss = safeString(req.query.iss || req.body.iss);
+    const loginHint = safeString(req.query.login_hint || req.body.login_hint);
+    const targetLinkUri = safeString(req.query.target_link_uri || req.body.target_link_uri);
+    const ltiMessageHint = safeString(req.query.lti_message_hint || req.body.lti_message_hint);
+    const clientId = safeString(req.query.client_id || req.body.client_id, "RvtKZccySaXWK8j");
+
+    if (!iss || !loginHint) {
+      console.warn("LTI 1.3 OIDC Login Initiation request is missing parameters:", { iss, loginHint });
+      return res.status(400).send("Missing required OIDC login initiation parameters (iss, login_hint).");
+    }
+
+    // Determine LMS's OIDC Auth redirect endpoint dynamically from the issuer URL
+    let baseIssuerUrl = iss;
+    let detectedSubpath = "";
+    const referer = safeString(req.headers.referer || "");
+
+    // 1. Check direct query/body params
+    const qSub = req.query.moodle_sub || req.body.moodle_sub;
+    if (qSub) {
+      detectedSubpath = safeString(qSub);
+    }
+
+    // 2. Extract from targetLinkUri
+    if (!detectedSubpath && targetLinkUri) {
+      try {
+        const parsedTarget = new URL(targetLinkUri);
+        const tSub = parsedTarget.searchParams.get("moodle_sub") || parsedTarget.searchParams.get("activity_sub");
+        if (tSub) {
+          detectedSubpath = tSub;
+        }
+      } catch (err) {
+        // ignore url parsing errors
+      }
+    }
+
+    // 3. Fallback: inspect referer header using extractSubpath
+    if (!detectedSubpath && referer) {
+      detectedSubpath = extractSubpath(referer);
+    }
+
+    // 4. Secure fallback: if Client ID is the known test Moodle Client ID, assume testmoodle
+    if (!detectedSubpath && clientId === "RvtKZccySaXWK8j") {
+      detectedSubpath = "testmoodle";
+    }
+
+    // Apply the detected subpath to issuer url if not already present
+    if (baseIssuerUrl.includes("learn.oca.ac.uk") && detectedSubpath && !baseIssuerUrl.includes(detectedSubpath)) {
+      baseIssuerUrl = baseIssuerUrl.endsWith("/") 
+        ? `${baseIssuerUrl}${detectedSubpath}` 
+        : `${baseIssuerUrl}/${detectedSubpath}`;
+      console.log(`LTI Login: Dynamically appended detected subfold /${detectedSubpath} to Issuer Url:`, baseIssuerUrl);
+    }
+
+    let authEndpoint = baseIssuerUrl.endsWith("/") ? `${baseIssuerUrl}mod/lti/auth.php` : `${baseIssuerUrl}/mod/lti/auth.php`;
+
+    // Construct a clean redirect_uri without query parameters. Moodle is extremely strict:
+    // the redirect_uri passed to auth.php MUST exactly match the configured Redirect URI on the platform settings.
+    let cleanRedirectUri = `https://${getPublicHost(req)}/lti/launch`;
+    let activityIdFromTarget = "";
+
+    if (targetLinkUri) {
+      try {
+        const parsedUrl = new URL(targetLinkUri);
+        let resolvedHost = parsedUrl.host;
+        if (resolvedHost.includes("localhost") || resolvedHost.includes("127.0.0.1") || resolvedHost.includes("3000")) {
+          resolvedHost = getPublicHost(req);
+        }
+        cleanRedirectUri = `${parsedUrl.protocol}//${resolvedHost}${parsedUrl.pathname}`;
+        const activityParam = parsedUrl.searchParams.get("activity");
+        if (activityParam) {
+          activityIdFromTarget = activityParam;
+        }
+      } catch (err) {
+        console.warn("Failed to parse targetLinkUri for clean redirectUri/activity:", err);
+      }
+    }
+
+    // Preserve the activity identifier and detected subpath in the state parameter
+    const randomSuffix = Math.random().toString(36).substring(2, 10);
+    let stateVal = "";
+    if (detectedSubpath) {
+      stateVal = activityIdFromTarget
+        ? `sub_${detectedSubpath}_act_${activityIdFromTarget}_${randomSuffix}`
+        : `sub_${detectedSubpath}_state_${randomSuffix}`;
+    } else {
+      stateVal = activityIdFromTarget
+        ? `act_${activityIdFromTarget}_${randomSuffix}`
+        : safeString(req.query.state || req.body.state, `state_${randomSuffix}`);
+    }
+
+    // Construct Moodle LTI 1.3 OIDC authorize parameters
+    const redirectParams = new URLSearchParams({
+      scope: "openid",
+      response_type: "id_token",
+      response_mode: "form_post",
+      prompt: "none",
+      client_id: clientId,
+      redirect_uri: cleanRedirectUri,
+      login_hint: loginHint,
+      state: stateVal,
+      nonce: Math.random().toString(36).substring(2, 15)
+    });
+
+    if (ltiMessageHint) {
+      redirectParams.append("lti_message_hint", ltiMessageHint);
+    }
+
+    const redirectUrl = `${authEndpoint}?${redirectParams.toString()}`;
+    console.log("Redirecting LTI login handshake to clean URL:", redirectUrl);
+    res.redirect(redirectUrl);
+  });
+
+  // LTI 1.3 Keyset URL (JWKS endpoint)
+  app.get("/lti/keyset", (req, res) => {
+    try {
+      if (!publicKeyPem) {
+        initializeKeys();
+      }
+      const publicKey = crypto.createPublicKey(publicKeyPem);
+      const jwk = publicKey.export({ format: "jwk" });
+      
+      const jwks = {
+        keys: [
+          {
+            kid: "lumen-lti-key-1",
+            use: "sig",
+            alg: "RS256",
+            kty: "RSA",
+            ...jwk
+          }
+        ]
+      };
+      res.setHeader("Content-Type", "application/json");
+      res.json(jwks);
+    } catch (err: any) {
+      console.error("JWKS keyset export failed:", err);
+      res.status(500).send("Internal server error: " + err.message);
+    }
+  });
+
+  // LTI 1.3 Deep Linking JWT Generator (Signs selected content items via RSA-SHA256)
+  app.post("/api/lti/deep-link-jwt", (req, res) => {
+    try {
+      const { activityId, activityName, activityDesc, idToken, iss, clientId, ltiData, deploymentId, moodle_sub } = req.body;
+      
+      if (!activityId || !activityName) {
+        return res.status(400).json({ error: "Missing required selection parameters." });
+      }
+
+      let client_id = safeString(clientId, "RvtKZccySaXWK8j"); // Default Client ID
+      let aud = safeString(iss, "https://learn.oca.ac.uk"); // Standard Moodle production issuer
+      let ltiDataVal: any = ltiData;
+      let deployment_id = safeString(deploymentId);
+
+      let dlSub = "";
+
+      if (idToken) {
+        try {
+          const parts = idToken.split(".");
+          if (parts.length >= 2) {
+            const payloadStr = Buffer.from(parts[1], "base64").toString("utf8");
+            const payload = JSON.parse(payloadStr);
+            
+            if (payload.iss) {
+              aud = payload.iss;
+            }
+            if (payload.aud) {
+              client_id = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+            }
+            if (payload["https://purl.imsglobal.org/spec/lti/claim/deployment_id"]) {
+              deployment_id = safeString(payload["https://purl.imsglobal.org/spec/lti/claim/deployment_id"]);
+            }
+            
+            let returnUrlStr = "";
+            if (payload["https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings"]) {
+              const dlSettings = payload["https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings"];
+              if (dlSettings.data) {
+                ltiDataVal = dlSettings.data;
+              }
+              if (dlSettings.deep_link_return_url) {
+                returnUrlStr = dlSettings.deep_link_return_url;
+              }
+            }
+
+            dlSub = extractSubpath(returnUrlStr) || extractSubpath(payload.iss) || extractSubpath(JSON.stringify(payload));
+          }
+        } catch (tokenErr) {
+          console.warn("Could not parse target launch token for signing request:", tokenErr);
+        }
+      }
+
+      if (!dlSub && moodle_sub) {
+        dlSub = safeString(moodle_sub);
+      }
+      if (!dlSub) {
+        dlSub = extractSubpath(req.headers.referer || "");
+      }
+      if (!dlSub && client_id === "RvtKZccySaXWK8j") {
+        dlSub = "testmoodle";
+      }
+
+      const iat = Math.floor(Date.now() / 1000);
+      const exp = iat + 300; // 5 minutes expiration
+
+      const payload: any = {
+        iss: client_id,
+        aud: aud,
+        iat: iat,
+        exp: exp,
+        nonce: Math.random().toString(36).substring(2, 15),
+        "https://purl.imsglobal.org/spec/lti/claim/message_type": "LtiDeepLinkingResponse",
+        "https://purl.imsglobal.org/spec/lti/claim/version": "1.3.0",
+        "https://purl.imsglobal.org/spec/lti/claim/deployment_id": deployment_id,
+        "https://purl.imsglobal.org/spec/lti-dl/claim/content_items": [
+          {
+            type: "ltiResourceLink",
+            title: activityName,
+            text: activityDesc || "",
+            url: dlSub 
+              ? `https://${getPublicHost(req)}/lti/launch?activity=${activityId}&moodle_sub=${dlSub}`
+              : `https://${getPublicHost(req)}/lti/launch?activity=${activityId}`,
+            custom: dlSub ? {
+              activity: activityId,
+              moodle_sub: dlSub
+            } : {
+              activity: activityId
+            },
+            iframe: {
+              width: 800,
+              height: 600
+            }
+          }
+        ]
+      };
+
+      if (ltiDataVal !== undefined && ltiDataVal !== "") {
+        let finalLtiData = ltiDataVal;
+        if (typeof ltiDataVal === "string") {
+          try {
+            finalLtiData = JSON.parse(ltiDataVal);
+          } catch (e) {
+            finalLtiData = ltiDataVal;
+          }
+        }
+        payload["https://purl.imsglobal.org/spec/lti-dl/claim/data"] = finalLtiData;
+      }
+
+      const header = {
+        alg: "RS256",
+        typ: "JWT",
+        kid: "lumen-lti-key-1"
+      };
+
+      if (!privateKeyPem) {
+        initializeKeys();
+      }
+
+      const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
+      const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+      const signInput = `${headerB64}.${payloadB64}`;
+
+      const signer = crypto.createSign("RSA-SHA256");
+      signer.update(signInput);
+      const signatureB64 = signer.sign(privateKeyPem, "base64url");
+
+      const jwt = `${signInput}.${signatureB64}`;
+
+      res.json({ jwt });
+    } catch (e: any) {
+      console.error("Deep linking JWT signing failed:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // LTI 1.3 Deep Linking Launch Endpoints
+  app.post("/lti/launch", async (req, res) => {
+    const idToken = safeString(req.body?.id_token);
+    const state = safeString(req.body?.state);
+
+    // 1. Try to extract activity and subpath from state parameter
+    let stateActivity = "";
+    let stateSubpath = "";
+    if (state.startsWith("sub_")) {
+      const parts = state.split("_");
+      stateSubpath = parts[1];
+      const actIdx = parts.indexOf("act");
+      if (actIdx !== -1 && actIdx + 1 < parts.length) {
+        stateActivity = parts[actIdx + 1];
+      }
+    } else if (state.startsWith("act_")) {
+      const parts = state.split("_");
+      if (parts.length >= 2) {
+        stateActivity = parts[1];
+      }
+    }
+
+    // 2. Try to extract activity standard/custom parameters from query/body
+    let reqActivity = safeString(req.query.activity || req.body?.activity);
+
+    // 3. Try to extract activity from inside the JWT payload's custom LTI claims
+    let tokenActivity = "";
+    let tokenMoodleSub = "";
+    let deepLinkReturnUrl = "";
+    let decodedIss = "";
+    let decodedClientId = "";
+    let decodedLtiData = "";
+    let decodedDeploymentId = "";
+    let extractedSubpath = "";
+
+    if (idToken) {
+      try {
+        const parts = idToken.split(".");
+        if (parts.length >= 2) {
+          const payloadStr = Buffer.from(parts[1], "base64").toString("utf8");
+          const payload = JSON.parse(payloadStr);
+          
+          if (payload.iss) {
+            decodedIss = payload.iss;
+          }
+          if (payload.aud) {
+            decodedClientId = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+          }
+          if (payload["https://purl.imsglobal.org/spec/lti/claim/deployment_id"]) {
+            decodedDeploymentId = safeString(payload["https://purl.imsglobal.org/spec/lti/claim/deployment_id"]);
+          }
+
+          // Pull out LTI Custom Claims
+          const customClaims = payload["https://purl.imsglobal.org/spec/lti/claim/custom"];
+          if (customClaims) {
+            if (customClaims.activity) {
+              tokenActivity = safeString(customClaims.activity);
+            }
+            if (customClaims.moodle_sub) {
+              tokenMoodleSub = safeString(customClaims.moodle_sub);
+            }
+          }
+
+          // Pull out Deep Linking return URL if available
+          const dlSettings = payload["https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings"];
+          if (dlSettings) {
+            if (dlSettings.deep_link_return_url) {
+              deepLinkReturnUrl = safeString(dlSettings.deep_link_return_url);
+            }
+            if (dlSettings.data) {
+              decodedLtiData = typeof dlSettings.data === "string" ? dlSettings.data : JSON.stringify(dlSettings.data);
+            }
+          }
+
+          // Search the entire payload for a Moodle subpath using extractSubpath as fallback
+          if (deepLinkReturnUrl) {
+            extractedSubpath = extractSubpath(deepLinkReturnUrl);
+          }
+          if (!extractedSubpath) {
+            extractedSubpath = extractSubpath(JSON.stringify(payload));
+          }
+
+          // 4. Try to authenticate or link the Moodle user with Firestore/Firebase Auth
+          try {
+            const email = safeString(payload.email);
+            const name = safeString(payload.name || payload.given_name || "LTI User");
+            const moodleSub = safeString(payload.sub);
+
+            let firebaseUid = "";
+
+            if (email) {
+              try {
+                // Find existing user by email
+                const userRecord = await admin.auth().getUserByEmail(email);
+                firebaseUid = userRecord.uid;
+                console.log(`LTI Launch: Found existing Firebase user ${firebaseUid} for email ${email}`);
+              } catch (authErr: any) {
+                if (authErr.code === "auth/user-not-found") {
+                  // Create a new user for this email so they map to the same account later
+                  const newUser = await admin.auth().createUser({
+                    email,
+                    emailVerified: true,
+                    displayName: name,
+                  });
+                  firebaseUid = newUser.uid;
+                  console.log(`LTI Launch: Created new Firebase user ${firebaseUid} for email ${email}`);
+                } else {
+                  console.error("LTI Launch: Error seeking user by email:", authErr);
+                }
+              }
+            } else if (moodleSub) {
+              // Fallback using sub
+              const subUid = `lti_${moodleSub}`;
+              try {
+                const userRecord = await admin.auth().getUser(subUid);
+                firebaseUid = userRecord.uid;
+                console.log(`LTI Launch: Found existing LTI-sub user ${firebaseUid}`);
+              } catch (authErr: any) {
+                if (authErr.code === "auth/user-not-found") {
+                  const newUser = await admin.auth().createUser({
+                    uid: subUid,
+                    displayName: name,
+                  });
+                  firebaseUid = newUser.uid;
+                  console.log(`LTI Launch: Created new LTI-sub user ${firebaseUid}`);
+                } else {
+                  console.error("LTI Launch: Error seeking user by sub:", authErr);
+                }
+              }
+            }
+
+            if (firebaseUid) {
+              // Set the lumen_uid cookie so the client syncs session
+              const host = getPublicHost(req) || "";
+              const cookieOptions: any = {
+                maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+                httpOnly: true,
+                secure: true,
+                sameSite: "none", // Required for iframe context
+              };
+              if (host.includes("oca.ac.uk")) {
+                cookieOptions.domain = ".oca.ac.uk";
+              }
+              res.cookie("lumen_uid", firebaseUid, cookieOptions);
+              console.log(`LTI Launch: Set lumen_uid cookie for Firebase user ${firebaseUid}`);
+            }
+          } catch (firebaseAuthErr) {
+            console.error("LTI Launch: Failed to provision or sync Firebase user:", firebaseAuthErr);
+          }
+        }
+      } catch (err) {
+        console.warn("LTI ID Token decode failed:", err);
+      }
+    }
+
+    // Determine the ultimate specific activity target
+    const targetActivity = reqActivity || stateActivity || tokenActivity;
+    const finalSubpath = stateSubpath || tokenMoodleSub || extractedSubpath;
+
+    console.log("LTI Launch POST request received:", {
+      reqActivity,
+      stateActivity,
+      tokenActivity,
+      targetActivity,
+      finalSubpath,
+      hasIdToken: !!idToken,
+      state
+    });
+
+    if (targetActivity) {
+      console.log(`Redirecting LTI launch to specific activity layout: /activity/${targetActivity}`);
+      let destUrl = `/activity/${targetActivity}?state=${encodeURIComponent(state)}`;
+      if (finalSubpath) {
+        destUrl += `&moodle_sub=${encodeURIComponent(finalSubpath)}`;
+      }
+      return res.redirect(destUrl);
+    }
+
+    if (!deepLinkReturnUrl && req.body?.deep_link_return_url) {
+      deepLinkReturnUrl = safeString(req.body.deep_link_return_url);
+    }
+
+    if (!deepLinkReturnUrl) {
+      deepLinkReturnUrl = "https://learn.oca.ac.uk/mod/lti/contentitem.php";
+    }
+
+    let selectParams = `?return_url=${encodeURIComponent(deepLinkReturnUrl)}` +
+      `&state=${encodeURIComponent(state)}` +
+      `&iss=${encodeURIComponent(decodedIss)}` +
+      `&client_id=${encodeURIComponent(decodedClientId)}` +
+      `&lti_data=${encodeURIComponent(decodedLtiData)}` +
+      `&deployment_id=${encodeURIComponent(decodedDeploymentId)}`;
+
+    if (finalSubpath) {
+      selectParams += `&moodle_sub=${encodeURIComponent(finalSubpath)}`;
+    }
+
+    const redirectUrl = `/lti/select` + selectParams;
+
+    console.log("Redirecting LTI select to clean URL:", redirectUrl);
+    res.redirect(redirectUrl);
+  });
+
+  app.get("/lti/launch", (req, res) => {
+    const state = safeString(req.query.state);
+    
+    // Try to extract activity and subpath from state parameter
+    let stateActivity = "";
+    let stateSubpath = "";
+    if (state.startsWith("sub_")) {
+      const parts = state.split("_");
+      stateSubpath = parts[1];
+      const actIdx = parts.indexOf("act");
+      if (actIdx !== -1 && actIdx + 1 < parts.length) {
+        stateActivity = parts[actIdx + 1];
+      }
+    } else if (state.startsWith("act_")) {
+      const parts = state.split("_");
+      if (parts.length >= 2) {
+        stateActivity = parts[1];
+      }
+    }
+
+    const querySub = safeString(req.query.moodle_sub || stateSubpath);
+    const targetActivity = safeString(req.query.activity || stateActivity);
+
+    console.log("LTI Launch GET request received:", {
+      reqActivity: req.query.activity,
+      stateActivity,
+      targetActivity,
+      state,
+      querySub
+    });
+
+    if (targetActivity) {
+      let destUrl = `/activity/${targetActivity}?state=${encodeURIComponent(state)}`;
+      if (querySub) {
+        destUrl += `&moodle_sub=${encodeURIComponent(querySub)}`;
+      }
+      return res.redirect(destUrl);
+    }
+
+    const deepLinkReturnUrl = safeString(req.query.deep_link_return_url, "https://learn.oca.ac.uk/mod/lti/contentitem.php");
+    let selectUrl = `/lti/select?return_url=${encodeURIComponent(deepLinkReturnUrl)}&state=${encodeURIComponent(state)}`;
+    if (querySub) {
+      selectUrl += `&moodle_sub=${encodeURIComponent(querySub)}`;
+    }
+    res.redirect(selectUrl);
+  });
 
   // Auth Session Endpoints for Cross-Subdomain SSO
   app.post("/api/auth/session", async (req, res) => {
@@ -115,7 +739,7 @@ async function startServer() {
 
       // Set a long-lived session cookie for the root domain
       // We are using a secure, httpOnly cookie scoped to .oca.ac.uk if in production
-      const host = req.get("host") || "";
+      const host = getPublicHost(req) || "";
       const cookieOptions: any = {
         maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
         httpOnly: true,
@@ -139,8 +763,31 @@ async function startServer() {
       const uid = req.cookies.lumen_uid;
       if (!uid) return res.status(401).json({ error: "Not authenticated" });
 
+      let email: string | undefined = undefined;
+      let emailVerified: boolean | undefined = undefined;
+      try {
+        const userRecord = await admin.auth().getUser(uid);
+        email = userRecord.email;
+        emailVerified = userRecord.emailVerified;
+      } catch (userErr) {
+        console.warn("Could not retrieve user record during session sync:", userErr);
+      }
+
+      const additionalClaims: any = {};
+      if (email) {
+        additionalClaims.email = email;
+      }
+      if (emailVerified !== undefined) {
+        additionalClaims.email_verified = emailVerified;
+      }
+
       // Generate a client custom token to sync the Firebase Client Auth SDK in iframes/embeds
-      const customToken = await admin.auth().createCustomToken(uid);
+      let customToken = "";
+      try {
+        customToken = await admin.auth().createCustomToken(uid, additionalClaims);
+      } catch (tokenErr: any) {
+        console.warn("Could not sign custom token for client SDK sync (expected in sandbox environments without signBlob permissions):", tokenErr.message);
+      }
       res.json({ uid, customToken });
     } catch (err: any) {
       console.error("Failed to generate Custom Token for session sync:", err);
@@ -148,8 +795,46 @@ async function startServer() {
     }
   });
 
+  // Secure endpoints to proxy Firestore activities queries for embeds & LTI launch
+  app.get("/api/activities", async (req, res) => {
+    try {
+      const uid = req.cookies.lumen_uid;
+      if (!uid) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
+      const snapshot = await firestore.collection("activities").orderBy("createdAt", "desc").get();
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(list);
+    } catch (err: any) {
+      console.error("Failed to list activities:", err);
+      res.status(500).json({ error: err.message || "Failed to load activities." });
+    }
+  });
+
+  app.get("/api/activities/:id", async (req, res) => {
+    try {
+      const uid = req.cookies.lumen_uid;
+      if (!uid) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { id } = req.params;
+      const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
+      const docSnap = await firestore.collection("activities").doc(id).get();
+      if (!docSnap.exists) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      res.json({ id: docSnap.id, ...docSnap.data() });
+    } catch (err: any) {
+      console.error(`Failed to load activity details for ${req.params.id}:`, err);
+      res.status(500).json({ error: err.message || "Failed to load activity details." });
+    }
+  });
+
   app.post("/api/auth/logout", (req, res) => {
-    const host = req.get("host") || "";
+    const host = getPublicHost(req) || "";
     const cookieOptions: any = {};
     if (host.includes("oca.ac.uk")) {
       cookieOptions.domain = ".oca.ac.uk";
@@ -240,24 +925,50 @@ async function startServer() {
         });
       }
 
-      const { model, contents, config, personaId } = req.body;
+      const { model, contents, config, personaId, activityId } = req.body;
       const modelName = model || "gemini-2.0-flash";
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeApiKey}`;
 
-      // Handle Persona integration
+      // Handle Activity and Persona integration
       let additionalInstruction = "";
-      if (personaId) {
+      let activitySystemPrompt = "";
+      let allowedPersonaIds: string[] = [];
+      let activityName = "Activity";
+
+      if (activityId) {
         try {
           const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
-          const personaDoc = await firestore.collection('personas').doc(personaId).get();
+          const activityDoc = await firestore.collection('activities').doc(activityId).get();
+          if (activityDoc.exists) {
+            const actData = activityDoc.data();
+            activitySystemPrompt = actData?.systemPrompt || "";
+            allowedPersonaIds = actData?.personaIds || [];
+            activityName = actData?.name || "Activity";
+            console.log(`Activity identified: ${activityName}`);
+          }
+        } catch (err) {
+          console.error("Failed to fetch activity data:", err);
+        }
+      }
+
+      const activePersonaId = personaId || (allowedPersonaIds.length > 0 ? allowedPersonaIds[0] : null);
+
+      if (activePersonaId) {
+        try {
+          const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
+          const personaDoc = await firestore.collection('personas').doc(activePersonaId).get();
           if (personaDoc.exists) {
             const personaData = personaDoc.data();
-            additionalInstruction = personaData?.system_prompt || "";
-            console.log(`Applying persona: ${personaData?.display_name}`);
+            // The activity systemPrompt overrides whatever has been inputted for the Persona
+            additionalInstruction = activitySystemPrompt || personaData?.system_prompt || "";
+            console.log(`Applying persona inside activity/standard: ${personaData?.display_name}`);
           }
         } catch (err) {
           console.error("Failed to fetch persona data:", err);
         }
+      } else if (activitySystemPrompt) {
+        // If there's no active persona, but there is an activity-level system prompt
+        additionalInstruction = activitySystemPrompt;
       }
 
       // Normalize SDK-style config to REST-style payload
@@ -350,6 +1061,46 @@ async function startServer() {
 
       // Increment global usage counter
       await incrementUsage();
+
+      // Automatically save conversation in embedded/iframe active activities to User History
+      const uid = req.cookies.lumen_uid;
+      if (uid) {
+        try {
+          const userParts = contents?.filter((c: any) => c.role === "user") || [];
+          const lastUserMsg = userParts[userParts.length - 1];
+          const userText = lastUserMsg?.parts?.[0]?.text;
+          const modelText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+          if (userText && modelText) {
+            const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
+            const currentSessionId = activityId ? `activity_${activityId}` : "default";
+
+            const userDocData = {
+              userId: uid,
+              sessionId: currentSessionId,
+              role: "user",
+              parts: [{ text: userText }],
+              createdAt: FieldValue.serverTimestamp(),
+              unit: activityId ? `${activityName}` : "global"
+            };
+
+            const modelDocData = {
+              userId: uid,
+              sessionId: currentSessionId,
+              role: "model",
+              parts: [{ text: modelText }],
+              createdAt: FieldValue.serverTimestamp(),
+              unit: activityId ? `${activityName}` : "global"
+            };
+
+            await firestore.collection("chat_history").add(userDocData);
+            await firestore.collection("chat_history").add(modelDocData);
+            console.log(`Successfully saved activity message turn to chat_history for user: ${uid}`);
+          }
+        } catch (saveErr) {
+          console.error("Failed to automatically save activity conversation to user chat_history:", saveErr);
+        }
+      }
 
       res.json(data);
     } catch (error: any) {

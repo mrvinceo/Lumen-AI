@@ -66,6 +66,16 @@ interface Persona {
   icon?: string;
 }
 
+interface Activity {
+  id: string;
+  name: string;
+  description?: string;
+  personaIds: string[];
+  systemPrompt?: string;
+  createdAt: any;
+  ltiEnabled?: boolean;
+}
+
 export default function AdminPanel() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [themes, setThemes] = useState<FeedbackTheme[]>([]);
@@ -114,6 +124,16 @@ export default function AdminPanel() {
   const [isUpdatingLimit, setIsUpdatingLimit] = useState(false);
   const [embedTab, setEmbedTab] = useState<"chat" | "planner">("chat");
 
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [newActivityName, setNewActivityName] = useState("");
+  const [newActivityDesc, setNewActivityDesc] = useState("");
+  const [newActivitySystemPrompt, setNewActivitySystemPrompt] = useState("");
+  const [newActivityPersonas, setNewActivityPersonas] = useState<string[]>([]);
+  const [newActivityLti, setNewActivityLti] = useState(true);
+  const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+  const [confirmDeleteActivityId, setConfirmDeleteActivityId] = useState<string | null>(null);
+  const [activeEmbedCodesId, setActiveEmbedCodesId] = useState<string | null>(null);
+
   useEffect(() => {
     let unsubscribeSettings: (() => void) | null = null;
     let unsubscribeStats: (() => void) | null = null;
@@ -127,6 +147,7 @@ export default function AdminPanel() {
         fetchThemes();
         fetchMoodleUnits();
         fetchPersonas();
+        fetchActivities();
         
         // Real-time listeners for global settings and stats
         unsubscribeSettings = onSnapshot(doc(db, "settings", "rate_limit"), (snapshot) => {
@@ -197,6 +218,100 @@ export default function AdminPanel() {
     const q = query(collection(db, "personas"), orderBy("display_name"));
     const snapshot = await getDocs(q);
     setPersonas(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Persona)));
+  };
+
+  const fetchActivities = async () => {
+    try {
+      const q = query(collection(db, "activities"), orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(q);
+      setActivities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Activity)));
+    } catch (err) {
+      console.warn("Error fetching activities:", err);
+    }
+  };
+
+  const handleSaveActivity = async () => {
+    if (!newActivityName || newActivityPersonas.length === 0) {
+      showNotification("Please provide a name and select at least one persona.", "error");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      if (editingActivity) {
+        await updateDoc(doc(db, "activities", editingActivity.id), {
+          name: newActivityName,
+          description: newActivityDesc,
+          personaIds: newActivityPersonas,
+          systemPrompt: newActivitySystemPrompt,
+          ltiEnabled: newActivityLti
+        });
+        showNotification("Activity updated successfully!", "success");
+      } else {
+        await addDoc(collection(db, "activities"), {
+          name: newActivityName,
+          description: newActivityDesc,
+          personaIds: newActivityPersonas,
+          systemPrompt: newActivitySystemPrompt,
+          ltiEnabled: newActivityLti,
+          createdAt: serverTimestamp()
+        });
+        showNotification("Activity created successfully!", "success");
+      }
+      setNewActivityName("");
+      setNewActivityDesc("");
+      setNewActivitySystemPrompt("");
+      setNewActivityPersonas([]);
+      setNewActivityLti(true);
+      setEditingActivity(null);
+      fetchActivities();
+    } catch (error) {
+      console.error("Error saving activity:", error);
+      showNotification("Failed to save activity", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteActivity = async (id: string) => {
+    setIsLoading(true);
+    try {
+      await deleteDoc(doc(db, "activities", id));
+      showNotification("Activity deleted successfully!", "success");
+      fetchActivities();
+    } catch (error) {
+      console.error("Error deleting activity:", error);
+      showNotification("Failed to delete activity", "error");
+    } finally {
+      setIsLoading(false);
+      setConfirmDeleteActivityId(null);
+    }
+  };
+
+  const startEditActivity = (act: Activity) => {
+    setEditingActivity(act);
+    setNewActivityName(act.name);
+    setNewActivityDesc(act.description || "");
+    setNewActivitySystemPrompt(act.systemPrompt || "");
+    setNewActivityPersonas(act.personaIds || []);
+    setNewActivityLti(act.ltiEnabled !== false);
+    document.getElementById("activity-form-container")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const cancelEditActivity = () => {
+    setEditingActivity(null);
+    setNewActivityName("");
+    setNewActivityDesc("");
+    setNewActivitySystemPrompt("");
+    setNewActivityPersonas([]);
+    setNewActivityLti(true);
+  };
+
+  const toggleSelectPersona = (pId: string) => {
+    if (newActivityPersonas.includes(pId)) {
+      setNewActivityPersonas(newActivityPersonas.filter(id => id !== pId));
+    } else {
+      setNewActivityPersonas([...newActivityPersonas, pId]);
+    }
   };
 
   const handleUpdateRateLimit = async (newLimit: number) => {
@@ -1304,6 +1419,369 @@ export default function AdminPanel() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Interactive AI Activities Section */}
+        <div className="mt-20">
+          <div className="flex items-center gap-4 mb-8">
+            <div className="w-12 h-12 rounded-2xl bg-oca-verdigris text-white flex items-center justify-center shadow-lg border-2 border-oca-blue-tint">
+              <ClipboardList size={24} />
+            </div>
+            <div>
+              <h2 className="text-2xl font-black uppercase tracking-tight">Interactive AI Activities</h2>
+              <p className="text-sm text-gray-500 font-medium">Create embeddable contextual task sheets or chat interfaces with persona support.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 text-oca-blue">
+            {/* Create/Edit Activity Form */}
+            <div className="lg:col-span-1 space-y-6" id="activity-form-container">
+              <div className="bg-white rounded-[2rem] shadow-sm border-2 border-oca-blue p-8">
+                <h3 className="text-lg font-black uppercase tracking-tight mb-6 flex items-center gap-2">
+                  {editingActivity ? (
+                    <Palette size={20} className="text-oca-verdigris" />
+                  ) : (
+                    <Plus size={20} className="text-oca-verdigris" />
+                  )}
+                  {editingActivity ? "Edit Activity" : "Create Activity"}
+                </h3>
+                <div className="space-y-6 block">
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">Activity Name</label>
+                    <input 
+                      type="text" 
+                      value={newActivityName}
+                      onChange={(e) => setNewActivityName(e.target.value)}
+                      placeholder="e.g. Creative Photography Critique"
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-100 rounded-xl focus:ring-2 focus:ring-oca-blue focus:border-oca-blue outline-none transition-all font-bold text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">Short Description</label>
+                    <input 
+                      type="text" 
+                      value={newActivityDesc}
+                      onChange={(e) => setNewActivityDesc(e.target.value)}
+                      placeholder="e.g. Exercises for finding focus and style."
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-100 rounded-xl focus:ring-2 focus:ring-oca-blue focus:border-oca-blue outline-none transition-all font-medium text-sm"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">Associate AI Personas (Select 1 or more)</label>
+                    <p className="text-[10px] text-gray-400 mb-2 ml-1">The first chosen persona will act as the default voice.</p>
+                    <div className="max-h-40 overflow-y-auto border-2 border-gray-100 rounded-xl p-3 bg-gray-50 space-y-2">
+                      {personas.map(persona => {
+                        const isSelected = newActivityPersonas.includes(persona.id);
+                        return (
+                          <label key={persona.id} className="flex items-center gap-3 p-2 bg-white rounded-lg border border-gray-100 hover:border-oca-blue-tint cursor-pointer select-none transition-all">
+                            <input 
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelectPersona(persona.id)}
+                              className="rounded border-gray-300 text-oca-blue focus:ring-oca-blue"
+                            />
+                            <div className="flex-1">
+                              <p className="text-xs font-bold text-gray-700">{persona.display_name}</p>
+                              <p className="text-[9px] text-gray-400">ID: {persona.persona_id}</p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                      {personas.length === 0 && (
+                        <p className="text-xs text-gray-400 py-4 text-center">No personas created yet.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2 ml-1">
+                      System Prompt Override (Optional)
+                    </label>
+                    <p className="text-[10px] text-gray-400 mb-2 ml-1">Overrides whatever instruction has been setup for the associated personas.</p>
+                    <textarea 
+                      value={newActivitySystemPrompt}
+                      onChange={(e) => setNewActivitySystemPrompt(e.target.value)}
+                      placeholder="Write your special instructions here to steer the activity..."
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-100 rounded-xl focus:ring-2 focus:ring-oca-blue focus:border-oca-blue outline-none transition-all font-medium text-xs h-32 animate-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 px-1">
+                    <input 
+                      type="checkbox"
+                      id="lti-enabled-toggle"
+                      checked={newActivityLti}
+                      onChange={(e) => setNewActivityLti(e.target.checked)}
+                      className="rounded border-gray-300 text-oca-blue focus:ring-oca-blue h-4 w-4"
+                    />
+                    <label htmlFor="lti-enabled-toggle" className="text-xs font-bold text-gray-600 select-none cursor-pointer">
+                      Enable LTI 1.3 Deep Linking for Moodle
+                    </label>
+                  </div>
+
+                  <div className="flex gap-3">
+                    {editingActivity && (
+                      <button 
+                        onClick={cancelEditActivity}
+                        className="flex-1 py-4 bg-gray-100 text-gray-600 rounded-2xl font-black uppercase tracking-widest hover:bg-gray-200 transition-all border-2 border-transparent"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    <button 
+                      onClick={handleSaveActivity}
+                      disabled={isLoading}
+                      className="flex-1 py-4 bg-oca-blue text-white rounded-2xl font-black uppercase tracking-widest hover:bg-oca-verdigris disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-lg active:scale-95 border-2 border-oca-blue-tint cursor-pointer"
+                    >
+                      {isLoading ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                      {editingActivity ? "Update" : "Create"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Activities Table */}
+            <div className="lg:col-span-2">
+              <div className="bg-white rounded-[2rem] shadow-sm border-2 border-gray-100 overflow-hidden">
+                <div className="p-8 border-b border-gray-100 flex items-center justify-between">
+                  <h3 className="text-lg font-black uppercase tracking-tight">Existing Activities</h3>
+                  <span className="text-xs font-bold bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full">
+                    {activities.length} Total
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto font-sans">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100">
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Activity Details</th>
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Associated Personas</th>
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Status & Override</th>
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Embed Codes</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase tracking-widest text-gray-400">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {activities.map(activity => {
+                        const hasOverride = !!activity.systemPrompt?.trim();
+                        return (
+                          <React.Fragment key={activity.id}>
+                            <tr className="hover:bg-gray-50/55 transition-colors">
+                              <td className="px-6 py-5">
+                                <div className="font-bold text-gray-800 text-sm">{activity.name}</div>
+                                {activity.description && (
+                                  <div className="text-xs text-gray-400 mt-1 max-w-xs truncate">{activity.description}</div>
+                                )}
+                                <div className="text-[10px] text-gray-400 mt-1 font-mono">{activity.id}</div>
+                              </td>
+                              <td className="px-6 py-5">
+                                <div className="flex flex-wrap gap-1">
+                                  {activity.personaIds?.map(pId => {
+                                    const matchPersona = personas.find(p => p.id === pId);
+                                    return (
+                                      <span key={pId} className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full text-[10px] font-medium border border-gray-200">
+                                        {matchPersona ? matchPersona.display_name : `Id: ${pId}`}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                              <td className="px-6 py-5">
+                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border ${
+                                  hasOverride 
+                                    ? "bg-green-50 text-green-700 border-green-200" 
+                                    : "bg-gray-50 text-gray-500 border-gray-200"
+                                }`}>
+                                  {hasOverride ? "System Override Active" : "No Custom Override"}
+                                </span>
+                                <div className="mt-1.5 text-[9px] text-gray-400 font-bold">
+                                  {activity.ltiEnabled !== false ? "LTI 1.3 Active" : "Internal"}
+                                </div>
+                              </td>
+                              <td className="px-6 py-5">
+                                <button
+                                  onClick={() => setActiveEmbedCodesId(activeEmbedCodesId === activity.id ? null : activity.id)}
+                                  className="px-3 py-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-600 rounded-lg text-xs font-bold transition-all border border-indigo-200 flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Code size={14} />
+                                  Embed Info
+                                </button>
+                              </td>
+                              <td className="px-6 py-5 text-right">
+                                <div className="flex items-center justify-end gap-2">
+                                  <button 
+                                    onClick={() => startEditActivity(activity)}
+                                    className="p-2 text-gray-500 hover:bg-gray-50 hover:text-oca-blue rounded-lg transition-all border border-transparent hover:border-gray-100 cursor-pointer"
+                                    title="Edit Activity"
+                                  >
+                                    <Bot size={18} />
+                                  </button>
+
+                                  {confirmDeleteActivityId === activity.id ? (
+                                    <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100">
+                                      <button 
+                                        onClick={() => handleDeleteActivity(activity.id)}
+                                        className="px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 whitespace-nowrap cursor-pointer"
+                                      >
+                                        Confirm
+                                      </button>
+                                      <button 
+                                        onClick={() => setConfirmDeleteActivityId(null)}
+                                        className="px-2 py-1 bg-gray-200 text-gray-600 text-[10px] font-bold rounded cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button 
+                                      onClick={() => setConfirmDeleteActivityId(activity.id)}
+                                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200 cursor-pointer"
+                                      title="Delete Activity"
+                                    >
+                                      <Trash2 size={18} />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                            
+                            {activeEmbedCodesId === activity.id && (
+                              <tr>
+                                <td colSpan={5} className="bg-gray-50/70 px-8 py-6 border-b border-gray-100">
+                                  <div className="space-y-4">
+                                    <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                                      <h4 className="text-xs font-black uppercase tracking-wider text-indigo-900">Activity Embedding Codes</h4>
+                                      <button
+                                        onClick={() => setActiveEmbedCodesId(null)}
+                                        className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                                      >
+                                        <X size={16} />
+                                      </button>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                                      <div className="space-y-1">
+                                        <span className="block text-[9px] font-black uppercase tracking-widest text-gray-400">Web Component Embed Code (iframe)</span>
+                                        <p className="text-[10px] text-gray-550 mb-1 leading-normal">Copy this code to place the full-width interactive activity on any HTML page or VLE.</p>
+                                        <div className="relative">
+                                          <textarea 
+                                            readOnly 
+                                            value={`<iframe src="${window.location.origin}/activity/${activity.id}" width="100%" height="600" style="border:1px solid #e2e8f0; border-radius:16px;" allow="microphone; camera"></iframe>`}
+                                            className="w-full bg-gray-900 text-gray-300 p-3 rounded-lg text-[10px] font-mono select-all h-20 outline-none leading-relaxed"
+                                          />
+                                          <button
+                                            onClick={() => {
+                                              navigator.clipboard.writeText(`<iframe src="${window.location.origin}/activity/${activity.id}" width="100%" height="600" style="border:1px solid #e2e8f0; border-radius:16px;" allow="microphone; camera"></iframe>`);
+                                              showNotification("Iframe embed code copied!", "success");
+                                            }}
+                                            className="absolute bottom-2 right-2 p-1.5 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white rounded transition-all cursor-pointer"
+                                            title="Copy Code"
+                                          >
+                                            <Copy size={12} />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <span className="block text-[9px] font-black uppercase tracking-widest text-gray-400">LTI 1.3 / Moodle Registration URLs</span>
+                                        <p className="text-[10px] text-gray-550 mb-1 leading-normal">Use these endpoint URLs to configure this activity inside your Moodle External Tool settings.</p>
+                                        
+                                        <div className="space-y-2">
+                                          <div>
+                                            <div className="flex justify-between items-center text-[9px] text-gray-500 font-bold">
+                                              <span>Tool / Launch URL</span>
+                                              <button
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(`${window.location.origin}/lti/launch?activity=${activity.id}`);
+                                                  showNotification("Launch URL copied!", "success");
+                                                }}
+                                                className="text-indigo-600 hover:underline cursor-pointer"
+                                              >
+                                                Copy
+                                              </button>
+                                            </div>
+                                            <div className="p-2 bg-white border border-gray-200 rounded font-mono text-[9px] text-gray-600 select-all">
+                                              {window.location.origin}/lti/launch?activity={activity.id}
+                                            </div>
+                                          </div>
+                                          
+                                          <div>
+                                            <div className="flex justify-between items-center text-[9px] text-gray-500 font-bold">
+                                              <span>Initiate Login URL</span>
+                                              <button
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(`${window.location.origin}/lti/login`);
+                                                  showNotification("Login URL copied!", "success");
+                                                }}
+                                                className="text-indigo-600 hover:underline cursor-pointer"
+                                              >
+                                                Copy
+                                              </button>
+                                            </div>
+                                            <div className="p-2 bg-white border border-gray-200 rounded font-mono text-[9px] text-gray-600 select-all">
+                                              {window.location.origin}/lti/login
+                                            </div>
+                                          </div>
+
+                                          <div>
+                                            <div className="flex justify-between items-center text-[9px] text-gray-500 font-bold">
+                                              <span>Redirection URI(s)</span>
+                                              <button
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(`${window.location.origin}/lti/launch`);
+                                                  showNotification("Redirection URI copied!", "success");
+                                                }}
+                                                className="text-indigo-600 hover:underline cursor-pointer"
+                                              >
+                                                Copy
+                                              </button>
+                                            </div>
+                                            <div className="p-2 bg-white border border-gray-200 rounded font-mono text-[9px] text-gray-600 select-all">
+                                              {window.location.origin}/lti/launch
+                                            </div>
+                                          </div>
+
+                                          <div>
+                                            <div className="flex justify-between items-center text-[9px] text-gray-500 font-bold">
+                                              <span>Public Keyset URL</span>
+                                              <button
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(`${window.location.origin}/lti/keyset`);
+                                                  showNotification("Keyset URL copied!", "success");
+                                                }}
+                                                className="text-indigo-600 hover:underline cursor-pointer"
+                                              >
+                                                Copy
+                                              </button>
+                                            </div>
+                                            <div className="p-2 bg-white border border-gray-200 rounded font-mono text-[9px] text-gray-600 select-all">
+                                              {window.location.origin}/lti/keyset
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                      {activities.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-12 text-center text-xs text-gray-400">
+                            No activities configured. Formulate/save one in the builder on the left!
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>

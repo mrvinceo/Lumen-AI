@@ -14,7 +14,9 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.email.lower() == 'paulvincent@oca.ac.uk'
+        request.auth.uid == 'ZqpJke7dXaXj4aKsBdLycqIiXgK2' ||
+        ('email' in request.auth.token && request.auth.token.email == 'paulvincent@oca.ac.uk') ||
+        ('email' in request.auth.token && request.auth.token.email.matches('(?i)^paulvincent@oca\\.ac\\.uk$'))
       );
     }
 
@@ -83,6 +85,11 @@ service cloud.firestore {
       allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
       // Allow user to create schedules signed as themselves
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /activities/{activityId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
   }
 }

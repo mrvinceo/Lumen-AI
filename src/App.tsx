@@ -8,6 +8,8 @@ import AdminPanel from "./components/AdminPanel";
 import ChatWidget from "./components/ChatWidget";
 import HistoryView from "./components/HistoryView";
 import StudyPlanner from "./components/StudyPlanner";
+import ActivityView from "./components/ActivityView";
+import LtiSelectView from "./components/LtiSelectView";
 import { GraduationCap, BookOpen, ShieldCheck, AlertTriangle, Menu, X, History, LogIn, LogOut, User, Calendar } from "lucide-react";
 import React, { useState, useEffect } from "react";
 import { OCALogo, BotAvatar } from "./components/BrandAssets";
@@ -358,7 +360,9 @@ export default function App() {
 
 function AppContent() {
   const queryParams = new URLSearchParams(window.location.search);
-  const isWidgetRoute = window.location.pathname.startsWith("/widget");
+  const isWidgetRoute = window.location.pathname.startsWith("/widget") || 
+                        window.location.pathname.startsWith("/activity") || 
+                        window.location.pathname.startsWith("/lti");
   const isWidgetPlanner = window.location.pathname === "/widget/planner" || 
                           window.location.pathname === "/widget-planner" ||
                           (window.location.pathname === "/widget" && queryParams.get("view") === "planner");
@@ -405,6 +409,8 @@ function AppContent() {
         } />
         <Route path="/widget/planner" element={<StudyPlanner isWidget={true} />} />
         <Route path="/widget-planner" element={<StudyPlanner isWidget={true} />} />
+        <Route path="/activity/:activityId" element={<ActivityView />} />
+        <Route path="/lti/select" element={<LtiSelectView />} />
       </Routes>
       {!isWidgetRoute && !isPlannerRoute && <ChatWidget />}
     </>

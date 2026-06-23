@@ -113,6 +113,21 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "When the schedule was created." }
       },
       "required": ["userId", "unit", "projectNumber", "weeks", "content", "createdAt"]
+    },
+    "Activity": {
+      "title": "Interactive AI Activity",
+      "description": "An interactive task or assignment for students embedded in the VLE.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique ID/doc ID of the activity." },
+        "name": { "type": "string", "description": "The name of the activity." },
+        "description": { "type": "string", "description": "A brief description of what the activity does." },
+        "personaIds": { "type": "array", "description": "One or multiple associated persona IDs." },
+        "systemPrompt": { "type": "string", "description": "A system prompt override that, if specified, informs the conversation." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the activity was created." },
+        "ltiEnabled": { "type": "boolean", "description": "Whether this activity is enabled for LTI 1.3 deep linking selection." }
+      },
+      "required": ["name", "personaIds", "createdAt"]
     }
   },
   "firestore": {
@@ -124,6 +139,7 @@
     "/settings/{settingId}": { "schema": "Setting", "description": "Global application settings." },
     "/stats/{statId}": { "schema": "DailyStats", "description": "Daily usage statistics." },
     "/personas/{personaId}": { "schema": "Persona", "description": "AI Persona configurations." },
-    "/study_schedules/{scheduleId}": { "schema": "StudySchedule", "description": "Generated study schedules for Students." }
+    "/study_schedules/{scheduleId}": { "schema": "StudySchedule", "description": "Generated study schedules for Students." },
+    "/activities/{activityId}": { "schema": "Activity", "description": "Interactive AI Activities." }
   }
 }

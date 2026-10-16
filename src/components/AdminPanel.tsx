@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { FolderPlus, RefreshCw, Trash2, ExternalLink, CheckCircle, AlertCircle, Loader2, LogIn, ArrowLeft, Code, Copy, Palette, Plus, GraduationCap, Eye, X, Bot, ClipboardList, Activity, Check, Search, BookOpen, AlertTriangle } from "lucide-react";
+import { FolderPlus, RefreshCw, Trash2, ExternalLink, CheckCircle, AlertCircle, Loader2, LogIn, ArrowLeft, Code, Copy, Palette, Plus, GraduationCap, Eye, X, Bot, ClipboardList, Activity, Check, Search, BookOpen, AlertTriangle, Pencil, FileText, Sparkles, Cpu, Layers, Table, Sliders } from "lucide-react";
 import { db, auth, handleFirestoreError, OperationType } from "../firebase";
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, serverTimestamp, query, orderBy, setDoc, where, writeBatch, vector, getDoc, onSnapshot } from "firebase/firestore";
 import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
@@ -76,6 +76,84 @@ interface Activity {
   ltiEnabled?: boolean;
 }
 
+// Helper to split document text into semantic, context-aware chunks without breaking words or sentences
+function splitIntoSemanticChunks(text: string, maxChunkSize = 1200): { text: string; heading?: string }[] {
+  if (!text || !text.trim()) return [];
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  const rawParagraphs = normalized.split(/\n{2,}/);
+  const chunks: { text: string; heading?: string }[] = [];
+
+  let currentHeading = "General Overview";
+  let currentChunkBuffer: string[] = [];
+  let currentBufferLength = 0;
+
+  const flushBuffer = () => {
+    if (currentChunkBuffer.length === 0) return;
+    const combined = currentChunkBuffer.join("\n\n").trim();
+    if (combined.length > 0) {
+      const hasHeading = combined.startsWith("#") || combined.startsWith("[Context:");
+      const formatted = hasHeading ? combined : `[Context: ${currentHeading}]\n\n${combined}`;
+      chunks.push({ text: formatted, heading: currentHeading });
+    }
+    currentChunkBuffer = [];
+    currentBufferLength = 0;
+  };
+
+  for (const para of rawParagraphs) {
+    const trimmedPara = para.trim();
+    if (!trimmedPara) continue;
+
+    const mdHeadingMatch = trimmedPara.match(/^(#{1,4})\s+(.+)$/m);
+    const numberedHeadingMatch = trimmedPara.match(/^(\d+[\.\)]\s+[A-Z][^\n]+)/);
+
+    if (mdHeadingMatch) {
+      if (currentBufferLength > 300) flushBuffer();
+      currentHeading = mdHeadingMatch[2].trim();
+    } else if (numberedHeadingMatch && trimmedPara.length < 150) {
+      if (currentBufferLength > 300) flushBuffer();
+      currentHeading = numberedHeadingMatch[1].trim();
+    }
+
+    if (trimmedPara.length > maxChunkSize) {
+      flushBuffer();
+      const sentences = trimmedPara.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [trimmedPara];
+      let sentenceBuffer: string[] = [];
+      let sentenceLen = 0;
+
+      for (const sent of sentences) {
+        const trimmedSent = sent.trim();
+        if (!trimmedSent) continue;
+        if (sentenceLen + trimmedSent.length + 1 > maxChunkSize && sentenceBuffer.length > 0) {
+          const sentText = sentenceBuffer.join(" ").trim();
+          chunks.push({
+            text: sentText.startsWith("#") || sentText.startsWith("[Context:") ? sentText : `[Context: ${currentHeading}]\n\n${sentText}`,
+            heading: currentHeading,
+          });
+          sentenceBuffer = [];
+          sentenceLen = 0;
+        }
+        sentenceBuffer.push(trimmedSent);
+        sentenceLen += trimmedSent.length + 1;
+      }
+      if (sentenceBuffer.length > 0) {
+        const sentText = sentenceBuffer.join(" ").trim();
+        chunks.push({
+          text: sentText.startsWith("#") || sentText.startsWith("[Context:") ? sentText : `[Context: ${currentHeading}]\n\n${sentText}`,
+          heading: currentHeading,
+        });
+      }
+    } else {
+      if (currentBufferLength + trimmedPara.length + 2 > maxChunkSize && currentChunkBuffer.length > 0) {
+        flushBuffer();
+      }
+      currentChunkBuffer.push(trimmedPara);
+      currentBufferLength += trimmedPara.length + 2;
+    }
+  }
+  flushBuffer();
+  return chunks;
+}
+
 export default function AdminPanel() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [themes, setThemes] = useState<FeedbackTheme[]>([]);
@@ -87,6 +165,7 @@ export default function AdminPanel() {
   const [newFolderPersona, setNewFolderPersona] = useState("");
   const [newThemeName, setNewThemeName] = useState("");
   const [newThemePrompt, setNewThemePrompt] = useState("");
+  const [editingTheme, setEditingTheme] = useState<FeedbackTheme | null>(null);
   const [newMoodleUnitCode, setNewMoodleUnitCode] = useState("");
   
   // Persona form state
@@ -123,6 +202,16 @@ export default function AdminPanel() {
   const [dailyUsageCount, setDailyUsageCount] = useState<number>(0);
   const [isUpdatingLimit, setIsUpdatingLimit] = useState(false);
   const [embedTab, setEmbedTab] = useState<"chat" | "planner">("chat");
+  const [enableEmbedMediaFeedback, setEnableEmbedMediaFeedback] = useState<boolean>(true);
+  const [enableEmbedPersona, setEnableEmbedPersona] = useState<boolean>(true);
+
+  const getEmbedQueryString = () => {
+    const params = [];
+    if (!enableEmbedMediaFeedback) params.push("media=false");
+    if (!enableEmbedPersona) params.push("personas=false");
+    return params.length > 0 ? "?" + params.join("&") : "";
+  };
+  const embedQuery = getEmbedQueryString();
 
   const [activities, setActivities] = useState<Activity[]>([]);
   const [newActivityName, setNewActivityName] = useState("");
@@ -134,9 +223,45 @@ export default function AdminPanel() {
   const [confirmDeleteActivityId, setConfirmDeleteActivityId] = useState<string | null>(null);
   const [activeEmbedCodesId, setActiveEmbedCodesId] = useState<string | null>(null);
 
+  // Document AI / Layout Parser state
+  const [docAiStatus, setDocAiStatus] = useState<{
+    configured: boolean;
+    processorId: string;
+    location: string;
+    projectId: string;
+    enableDocumentAi: boolean;
+    activeBackend: string;
+    supportedFeatures?: string[];
+  } | null>(null);
+  const [docAiProcessorInput, setDocAiProcessorInput] = useState("");
+  const [docAiLocationInput, setDocAiLocationInput] = useState("us");
+  const [docAiProjectIdInput, setDocAiProjectIdInput] = useState("");
+  const [docAiEnabledInput, setDocAiEnabledInput] = useState(true);
+  const [isSavingDocAi, setIsSavingDocAi] = useState(false);
+  const [testSampleInput, setTestSampleInput] = useState(
+`# Photography Module 1: Camera Controls & Optics
+This module covers foundational exposure mathematics and shutter mechanics.
+
+## Section 1: The Exposure Triangle
+The relationship between Aperture, Shutter Speed, and ISO forms the core foundation.
+
+| Setting | Function | Primary Side Effect |
+| :--- | :--- | :--- |
+| **Aperture (f-stop)** | Controls light via diaphragm opening | Depth of field (bokeh vs sharpness) |
+| **Shutter Speed** | Duration sensor is exposed | Motion blur vs freezing action |
+| **ISO** | Sensor amplification gain | Digital noise / grain |
+
+### 1.1 Calculating Reciprocal Exposures
+When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the photographer must open the aperture by one stop or double the ISO to maintain equivalent sensor exposure.
+`
+  );
+  const [isTestingDocAi, setIsTestingDocAi] = useState(false);
+  const [docAiTestResult, setDocAiTestResult] = useState<any>(null);
+
   useEffect(() => {
     let unsubscribeSettings: (() => void) | null = null;
     let unsubscribeStats: (() => void) | null = null;
+    let unsubscribeDocAi: (() => void) | null = null;
 
     const unsubscribeAuth = auth.onAuthStateChanged(user => {
       setUser(user);
@@ -148,14 +273,27 @@ export default function AdminPanel() {
         fetchMoodleUnits();
         fetchPersonas();
         fetchActivities();
+        fetchDocAiStatus();
         
-        // Real-time listeners for global settings and stats
+        // Real-time listeners for global settings, Document AI, and stats
         unsubscribeSettings = onSnapshot(doc(db, "settings", "rate_limit"), (snapshot) => {
           if (snapshot.exists()) {
             setGlobalRateLimit(snapshot.data().value);
           }
         }, (err) => {
           console.warn("Settings listener failed:", err.message);
+        });
+
+        unsubscribeDocAi = onSnapshot(doc(db, "settings", "document_ai"), (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            if (data.processorId !== undefined) setDocAiProcessorInput(data.processorId);
+            if (data.location !== undefined) setDocAiLocationInput(data.location);
+            if (data.projectId !== undefined) setDocAiProjectIdInput(data.projectId);
+            if (data.enableDocumentAi !== undefined) setDocAiEnabledInput(data.enableDocumentAi);
+          }
+        }, (err) => {
+          console.warn("DocAI settings listener failed:", err.message);
         });
 
         unsubscribeStats = onSnapshot(doc(db, "stats", "daily_usage"), (snapshot) => {
@@ -191,6 +329,7 @@ export default function AdminPanel() {
     return () => {
       unsubscribeAuth();
       if (unsubscribeSettings) unsubscribeSettings();
+      if (unsubscribeDocAi) unsubscribeDocAi();
       if (unsubscribeStats) unsubscribeStats();
       window.removeEventListener("message", handleOAuthMessage);
     };
@@ -206,6 +345,86 @@ export default function AdminPanel() {
     const q = query(collection(db, "feedbackThemes"), orderBy("createdAt", "desc"));
     const snapshot = await getDocs(q);
     setThemes(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FeedbackTheme)));
+  };
+
+  const fetchDocAiStatus = async () => {
+    try {
+      const res = await fetch("/api/document-ai/status");
+      if (res.ok) {
+        const data = await res.json();
+        setDocAiStatus(data);
+        if (data.processorId !== undefined) setDocAiProcessorInput(data.processorId || "");
+        if (data.location !== undefined) setDocAiLocationInput(data.location || "us");
+        if (data.projectId !== undefined) setDocAiProjectIdInput(data.projectId || "");
+        if (data.enableDocumentAi !== undefined) setDocAiEnabledInput(data.enableDocumentAi !== false);
+      }
+    } catch (err) {
+      console.warn("Failed to fetch Document AI status:", err);
+    }
+  };
+
+  const handleSaveDocAiConfig = async () => {
+    setIsSavingDocAi(true);
+    try {
+      // 1. Client-side direct Firestore save for instant persistence
+      try {
+        await setDoc(doc(db, "settings", "document_ai"), {
+          processorId: docAiProcessorInput.trim(),
+          location: docAiLocationInput.trim(),
+          projectId: docAiProjectIdInput.trim(),
+          enableDocumentAi: docAiEnabledInput,
+          updatedAt: new Date(),
+        }, { merge: true });
+      } catch (clientFsErr: any) {
+        console.warn("Client-side direct Firestore save skipped/failed:", clientFsErr.message);
+      }
+
+      // 2. Server API save for backend synchronization
+      const res = await fetch("/api/document-ai/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          processorId: docAiProcessorInput.trim(),
+          location: docAiLocationInput.trim(),
+          projectId: docAiProjectIdInput.trim(),
+          enableDocumentAi: docAiEnabledInput,
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || errJson.details || "Failed to save Document AI settings on server");
+      }
+
+      showNotification("Document AI Layout Parser configuration saved!", "success");
+      await fetchDocAiStatus();
+    } catch (err: any) {
+      console.error("Save config error:", err);
+      showNotification(err.message || "Failed to save configuration", "error");
+    } finally {
+      setIsSavingDocAi(false);
+    }
+  };
+
+  const handleRunDocAiTest = async () => {
+    if (!testSampleInput.trim()) return;
+    setIsTestingDocAi(true);
+    setDocAiTestResult(null);
+    try {
+      const res = await fetch("/api/document-ai/test-parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sampleText: testSampleInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.details || data.error || "Test failed");
+      setDocAiTestResult(data);
+      showNotification(`Successfully parsed ${data.chunks?.length || 0} contextual chunks!`, "success");
+    } catch (err: any) {
+      showNotification(err.message || "Test execution failed", "error");
+    } finally {
+      setIsTestingDocAi(false);
+    }
   };
 
   const fetchMoodleUnits = async () => {
@@ -456,8 +675,49 @@ export default function AdminPanel() {
       setNewThemeName("");
       setNewThemePrompt("");
       fetchThemes();
+      showNotification("Theme created successfully", "success");
     } catch (error) {
       console.error("Error adding theme:", error);
+      showNotification("Failed to add theme", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStartEditTheme = (theme: FeedbackTheme) => {
+    setEditingTheme(theme);
+    setNewThemeName(theme.name);
+    setNewThemePrompt(theme.prompt);
+    document.getElementById("theme-form-container")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const handleCancelEditTheme = () => {
+    setEditingTheme(null);
+    setNewThemeName("");
+    setNewThemePrompt("");
+  };
+
+  const handleUpdateTheme = async () => {
+    if (!editingTheme || !newThemeName || !newThemePrompt) return;
+    setIsLoading(true);
+    try {
+      await updateDoc(doc(db, "feedbackThemes", editingTheme.id), {
+        name: newThemeName,
+        prompt: newThemePrompt,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingTheme(null);
+      setNewThemeName("");
+      setNewThemePrompt("");
+      fetchThemes();
+      showNotification("Theme updated successfully", "success");
+    } catch (error: any) {
+      console.error("Error updating theme:", error);
+      try {
+        handleFirestoreError(error, OperationType.UPDATE, `feedbackThemes/${editingTheme.id}`);
+      } catch (e: any) {
+        showNotification(e.message, "error");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -866,6 +1126,19 @@ export default function AdminPanel() {
     }
   };
 
+  const handleResetFolderStatus = async (folder: Folder) => {
+    try {
+      await updateDoc(doc(db, "folders", folder.id), { 
+        status: "completed",
+        indexedAt: serverTimestamp()
+      });
+      fetchFolders();
+      showNotification(`Reset status for "${folder.name}" to completed.`, "info");
+    } catch (e: any) {
+      showNotification(`Failed to reset folder status: ${e.message}`, "error");
+    }
+  };
+
   const handleIndexFolder = async (folder: Folder) => {
     if (!tokens) {
       showNotification("Please connect to Google Drive first.", "info");
@@ -875,10 +1148,35 @@ export default function AdminPanel() {
     setIsLoading(true);
     await updateDoc(doc(db, "folders", folder.id), { status: "indexing" });
     fetchFolders();
+    showNotification(`Starting indexing for "${folder.name}". Please keep this tab open until complete...`, "info");
 
     try {
       console.log("Indexing folder:", folder.folderId, "with tokens:", tokens ? "Present" : "Missing");
-      // 1. List files
+
+      // 0. Purge any outdated chunks for this folder to prevent duplication
+      try {
+        const oldChunksQuery = query(collection(db, "chunks"), where("folderId", "==", folder.folderId));
+        const oldChunksSnap = await getDocs(oldChunksQuery);
+        if (!oldChunksSnap.empty) {
+          let purgeBatch = writeBatch(db);
+          let purgeCount = 0;
+          for (const docSnap of oldChunksSnap.docs) {
+            purgeBatch.delete(docSnap.ref);
+            purgeCount++;
+            if (purgeCount === 500) {
+              await purgeBatch.commit();
+              purgeBatch = writeBatch(db);
+              purgeCount = 0;
+            }
+          }
+          if (purgeCount > 0) await purgeBatch.commit();
+          console.log(`[IndexFolder] Purged ${oldChunksSnap.size} outdated chunks for folder ${folder.name}`);
+        }
+      } catch (purgeErr) {
+        console.warn("[IndexFolder] Could not purge old chunks:", purgeErr);
+      }
+
+      // 1. List files in Google Drive folder
       const listRes = await fetch("/api/drive/list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -891,11 +1189,11 @@ export default function AdminPanel() {
         if (listRes.status === 401) {
           throw new Error("Google Drive session expired. Please click 'Connect Drive' again.");
         }
-        throw new Error(listData.details || listData.error || "Failed to list files");
+        throw new Error(listData.details || listData.error || "Failed to list files in folder");
       }
 
       const files = listData;
-      if (!Array.isArray(files)) throw new Error("API returned invalid file list format");
+      if (!Array.isArray(files)) throw new Error("Google Drive API returned invalid file list format");
 
       const allowedMimeTypes = [
         "text/plain",
@@ -904,76 +1202,111 @@ export default function AdminPanel() {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       ];
 
-      for (const file of files) {
-        if (allowedMimeTypes.includes(file.mimeType)) {
-          try {
-            const contentRes = await fetch("/api/drive/content", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tokens, fileId: file.id }),
-            });
-            
-            if (!contentRes.ok) {
-              const errorData = await contentRes.json();
-              console.error(`Failed to get content for ${file.name}:`, errorData);
-              continue;
-            }
+      const eligibleFiles = files.filter(f => allowedMimeTypes.includes(f.mimeType));
 
+      if (eligibleFiles.length === 0) {
+        await updateDoc(doc(db, "folders", folder.id), { 
+          status: "completed", 
+          indexedAt: serverTimestamp() 
+        });
+        showNotification(`No supported documents found in "${folder.name}". Marked as completed.`, "info");
+        return;
+      }
+
+      let totalChunksIndexed = 0;
+
+      for (let fileIdx = 0; fileIdx < eligibleFiles.length; fileIdx++) {
+        const file = eligibleFiles[fileIdx];
+        showNotification(`Parsing & indexing file ${fileIdx + 1} of ${eligibleFiles.length}: "${file.name}"...`, "info");
+
+        try {
+          const contentRes = await fetch("/api/drive/content", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tokens, fileId: file.id, returnChunks: true }),
+          });
+          
+          if (!contentRes.ok) {
+            const errorData = await contentRes.json().catch(() => ({}));
+            console.error(`Failed to get content for ${file.name}:`, errorData);
+            continue;
+          }
+
+          let chunksToEmbed: { text: string; heading?: string }[] = [];
+          const contentType = contentRes.headers.get("content-type") || "";
+
+          if (contentType.includes("application/json")) {
+            const data = await contentRes.json();
+            if (Array.isArray(data.chunks) && data.chunks.length > 0) {
+              chunksToEmbed = data.chunks.map((c: any) => ({
+                text: typeof c === "string" ? c : c.text,
+                heading: c.heading || undefined,
+              }));
+            } else if (data.text) {
+              chunksToEmbed = splitIntoSemanticChunks(data.text, 1200);
+            }
+          } else {
             const text = await contentRes.text();
             if (!text || text.trim().length === 0) continue;
-
-            // Chunking
-            const chunks = text.match(/[\s\S]{1,1500}/g) || [];
-            
-            // Generate embeddings in batches of concurrent requests (concurrency limit = 10)
-            const CONCURRENCY_LIMIT = 10;
-            const chunksWithEmbeddings: any[] = [];
-            
-            for (let i = 0; i < chunks.length; i += CONCURRENCY_LIMIT) {
-              const batchSlice = chunks.slice(i, i + CONCURRENCY_LIMIT);
-              const promises = batchSlice.map(async (chunkText: string) => {
-                try {
-                  const embedding = await getEmbeddings(chunkText);
-                  return { text: chunkText, embedding };
-                } catch (error) {
-                  console.error("Failed to generate embedding for manual chunk:", error);
-                  return null;
-                }
-              });
-              
-              const results = await Promise.all(promises);
-              for (const res of results) {
-                if (res) chunksWithEmbeddings.push(res);
-              }
-            }
-
-            let batch = writeBatch(db);
-            let count = 0;
-            
-            for (const chunk of chunksWithEmbeddings) {
-              const newDocRef = doc(collection(db, "chunks"));
-              batch.set(newDocRef, {
-                folderId: (folder as any).folderId,
-                fileId: file.id,
-                fileName: file.name,
-                text: chunk.text,
-                embedding: vector(chunk.embedding),
-                unit: (folder as any).unit || null,
-                persona: (folder as any).persona || null,
-                indexedAt: serverTimestamp(),
-              });
-              count++;
-              
-              if (count === 500) {
-                await batch.commit();
-                batch = writeBatch(db);
-                count = 0;
-              }
-            }
-            if (count > 0) await batch.commit();
-          } catch (e) {
-            console.error(`Error processing file ${file.name}:`, e);
+            chunksToEmbed = splitIntoSemanticChunks(text, 1200);
           }
+
+          if (chunksToEmbed.length === 0) continue;
+          
+          // Generate embeddings in batches of concurrent requests (concurrency limit = 10)
+          const CONCURRENCY_LIMIT = 10;
+          const chunksWithEmbeddings: any[] = [];
+          
+          for (let i = 0; i < chunksToEmbed.length; i += CONCURRENCY_LIMIT) {
+            const batchSlice = chunksToEmbed.slice(i, i + CONCURRENCY_LIMIT);
+            const promises = batchSlice.map(async (chunkItem) => {
+              try {
+                const embedding = await getEmbeddings(chunkItem.text);
+                return { 
+                  text: chunkItem.text, 
+                  heading: chunkItem.heading,
+                  embedding 
+                };
+              } catch (error) {
+                console.error("Failed to generate embedding for chunk:", error);
+                return null;
+              }
+            });
+            
+            const results = await Promise.all(promises);
+            for (const res of results) {
+              if (res) chunksWithEmbeddings.push(res);
+            }
+          }
+
+          let batch = writeBatch(db);
+          let count = 0;
+          
+          for (const chunk of chunksWithEmbeddings) {
+            const newDocRef = doc(collection(db, "chunks"));
+            batch.set(newDocRef, {
+              folderId: (folder as any).folderId,
+              fileId: file.id,
+              fileName: file.name,
+              text: chunk.text,
+              heading: chunk.heading || null,
+              embedding: vector(chunk.embedding),
+              unit: (folder as any).unit || null,
+              persona: (folder as any).persona || null,
+              indexedAt: serverTimestamp(),
+            });
+            count++;
+            totalChunksIndexed++;
+            
+            if (count === 500) {
+              await batch.commit();
+              batch = writeBatch(db);
+              count = 0;
+            }
+          }
+          if (count > 0) await batch.commit();
+        } catch (e) {
+          console.error(`Error processing file ${file.name}:`, e);
         }
       }
 
@@ -981,9 +1314,11 @@ export default function AdminPanel() {
         status: "completed", 
         indexedAt: serverTimestamp() 
       });
-    } catch (error) {
+      showNotification(`Successfully indexed "${folder.name}" (${totalChunksIndexed} chunks)!`, "success");
+    } catch (error: any) {
       console.error("Indexing error:", error);
       await updateDoc(doc(db, "folders", folder.id), { status: "error" });
+      showNotification(`Indexing failed for "${folder.name}": ${error.message || error}`, "error");
     } finally {
       setIsLoading(false);
       fetchFolders();
@@ -1222,11 +1557,22 @@ export default function AdminPanel() {
                           <button 
                             onClick={() => handleIndexFolder(folder)}
                             disabled={isLoading || !tokens}
-                            title="Index Folder"
+                            title={folder.status === "indexing" ? "Folder is currently marked as indexing. Click to re-run indexing now." : "Index Folder"}
                             className="p-2 text-oca-blue hover:bg-oca-blue-tint rounded-lg transition-colors disabled:opacity-30 border border-transparent hover:border-oca-blue"
                           >
                             {isLoading && folder.status === "indexing" ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
                           </button>
+
+                          {folder.status === "indexing" && (
+                            <button
+                              onClick={() => handleResetFolderStatus(folder)}
+                              disabled={isLoading}
+                              title="Clear stuck indexing status and mark completed"
+                              className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors text-xs font-bold border border-transparent hover:border-amber-200"
+                            >
+                              <Check size={18} />
+                            </button>
+                          )}
                           
                           {confirmDeleteId === folder.id ? (
                             <div className="flex items-center gap-2">
@@ -1971,13 +2317,37 @@ export default function AdminPanel() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* Add Theme Form */}
-            <div className="lg:col-span-1">
+            {/* Add / Edit Theme Form */}
+            <div className="lg:col-span-1" id="theme-form-container">
               <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-                <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                  <Plus size={18} className="text-indigo-600" />
-                  Add Theme
-                </h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    {editingTheme ? (
+                      <>
+                        <Pencil size={18} className="text-indigo-600" />
+                        Edit Theme
+                      </>
+                    ) : (
+                      <>
+                        <Plus size={18} className="text-indigo-600" />
+                        Add Theme
+                      </>
+                    )}
+                  </h3>
+                  {editingTheme && (
+                    <button 
+                      onClick={handleCancelEditTheme}
+                      className="text-xs font-semibold text-gray-500 hover:text-gray-800 underline"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                {editingTheme && (
+                  <div className="mb-4 p-2.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs text-indigo-700 flex items-center justify-between">
+                    <span>Editing: <strong>{editingTheme.name}</strong></span>
+                  </div>
+                )}
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Theme Name</label>
@@ -1999,13 +2369,23 @@ export default function AdminPanel() {
                       className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-xs"
                     />
                   </div>
-                  <button 
-                    onClick={handleAddTheme}
-                    disabled={isLoading || !newThemeName || !newThemePrompt}
-                    className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-                  >
-                    Save Theme
-                  </button>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={editingTheme ? handleUpdateTheme : handleAddTheme}
+                      disabled={isLoading || !newThemeName || !newThemePrompt}
+                      className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                    >
+                      {editingTheme ? "Update Theme" : "Save Theme"}
+                    </button>
+                    {editingTheme && (
+                      <button 
+                        onClick={handleCancelEditTheme}
+                        className="px-4 py-3 bg-gray-100 text-gray-700 rounded-xl font-semibold hover:bg-gray-200 transition-colors text-xs"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2016,46 +2396,75 @@ export default function AdminPanel() {
                 <div className="p-6 border-b border-gray-100">
                   <h3 className="font-bold">Existing Themes</h3>
                 </div>
-                <div className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
                   {themes.length === 0 && (
                     <div className="p-12 text-center text-gray-500">
                       No themes configured yet.
                     </div>
                   )}
-                  {themes.map((theme) => (
-                    <div key={theme.id} className="p-6 hover:bg-gray-50 transition-colors group">
-                      <div className="flex justify-between items-start mb-2">
-                        <h4 className="font-bold text-indigo-600">{theme.name}</h4>
-                        {confirmDeleteId === theme.id ? (
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={() => handleDeleteTheme(theme.id)}
-                              className="px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 transition-colors"
-                            >
-                              Confirm
-                            </button>
-                            <button 
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="px-2 py-1 bg-gray-200 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-300 transition-colors"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <button 
-                            onClick={() => setConfirmDeleteId(theme.id)}
-                            disabled={isLoading}
-                            className="p-2 text-red-600 opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded-lg transition-all disabled:opacity-30"
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                  {themes.map((theme) => {
+                    const isEditingThis = editingTheme?.id === theme.id;
+                    return (
+                      <div 
+                        key={theme.id} 
+                        className={cn(
+                          "p-6 transition-colors group relative border-l-4",
+                          isEditingThis 
+                            ? "bg-indigo-50/50 border-l-indigo-600" 
+                            : "hover:bg-gray-50 border-l-transparent"
                         )}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-indigo-600">{theme.name}</h4>
+                            {isEditingThis && (
+                              <span className="text-[10px] bg-indigo-100 text-indigo-700 font-semibold px-2 py-0.5 rounded-full">
+                                Editing
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button 
+                              onClick={() => handleStartEditTheme(theme)}
+                              disabled={isLoading}
+                              className="p-1.5 text-indigo-600 hover:bg-indigo-100/60 rounded-lg transition-all"
+                              title="Edit Prompt"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            {confirmDeleteId === theme.id ? (
+                              <div className="flex items-center gap-1 ml-1">
+                                <button 
+                                  onClick={() => handleDeleteTheme(theme.id)}
+                                  className="px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded hover:bg-red-700 transition-colors"
+                                >
+                                  Confirm
+                                </button>
+                                <button 
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="px-2 py-1 bg-gray-200 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-300 transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button 
+                                onClick={() => setConfirmDeleteId(theme.id)}
+                                disabled={isLoading}
+                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-all disabled:opacity-30"
+                                title="Delete Theme"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-600 line-clamp-4 leading-relaxed italic whitespace-pre-wrap">
+                          "{theme.prompt}"
+                        </p>
                       </div>
-                      <p className="text-xs text-gray-600 line-clamp-3 leading-relaxed italic">
-                        "{theme.prompt}"
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2379,6 +2788,195 @@ export default function AdminPanel() {
           )}
         </AnimatePresence>
 
+        {/* Document AI Layout Parser & Contextual Chunking Configuration */}
+        <div className="mt-12 bg-white rounded-[2.5rem] shadow-sm border-2 border-indigo-200 p-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 pb-6 border-b border-gray-100">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-lg border-2 border-white/20">
+                <Sparkles size={24} />
+              </div>
+              <div>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-black uppercase tracking-tight text-gray-900">Document AI Layout Parser</h2>
+                  <span className={cn(
+                    "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border",
+                    docAiStatus?.configured && docAiStatus?.enableDocumentAi !== false
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                  )}>
+                    {docAiStatus?.configured && docAiStatus?.enableDocumentAi !== false
+                      ? "Google Cloud Processor Connected"
+                      : "Gemini Layout Parser Active"}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-500 font-medium mt-1">
+                  High-fidelity document layout parsing, markdown table preservation, and contextual ancestor heading chunking for RAG embeddings.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={fetchDocAiStatus}
+              className="p-2.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl transition-colors border border-gray-200 self-start md:self-auto"
+              title="Refresh status"
+            >
+              <RefreshCw size={16} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Configuration Settings */}
+            <div className="lg:col-span-5 space-y-5 bg-gray-50/70 p-6 rounded-2xl border border-gray-200">
+              <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-gray-500">
+                <Sliders size={14} className="text-indigo-600" />
+                <span>Processor Settings</span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 ml-1">
+                  Document AI Processor ID
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g., 7a8b9c1d2e3f4g5h or full processor path"
+                  value={docAiProcessorInput}
+                  onChange={(e) => setDocAiProcessorInput(e.target.value)}
+                  className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm font-mono text-gray-800 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+                />
+                <p className="text-[10px] text-gray-400 mt-1 ml-1">
+                  Obtained from Google Cloud Console &gt; Document AI &gt; Processors (Layout Parser).
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 ml-1">
+                    Location Region
+                  </label>
+                  <select
+                    value={docAiLocationInput}
+                    onChange={(e) => setDocAiLocationInput(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm font-bold text-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                  >
+                    <option value="us">United States (us)</option>
+                    <option value="eu">European Union (eu)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5 ml-1">
+                    Project ID
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., gen-lang-client-0701859835"
+                    value={docAiProjectIdInput}
+                    onChange={(e) => setDocAiProjectIdInput(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm font-mono text-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-gray-200">
+                <label className="flex items-center justify-between cursor-pointer py-1">
+                  <div>
+                    <span className="text-xs font-bold text-gray-800 block">Enable Document AI Processor</span>
+                    <span className="text-[10px] text-gray-500">
+                      When enabled and configured, routes PDFs directly to the Layout Parser API.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={docAiEnabledInput}
+                    onChange={(e) => setDocAiEnabledInput(e.target.checked)}
+                    className="w-5 h-5 accent-indigo-600 rounded cursor-pointer"
+                  />
+                </label>
+              </div>
+
+              <button
+                onClick={handleSaveDocAiConfig}
+                disabled={isSavingDocAi}
+                className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {isSavingDocAi ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                Save Document AI Configuration
+              </button>
+
+              <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 text-[11px] text-indigo-900 leading-relaxed">
+                <strong>Seamless Resilience:</strong> If the Cloud Document AI Processor is not configured or encounters a quota event, ingestion automatically falls back to Gemini Layout Parsing with identical semantic markdown structure and breadcrumb preservation.
+              </div>
+            </div>
+
+            {/* Live Contextual Chunking Sandbox */}
+            <div className="lg:col-span-7 space-y-4 flex flex-col">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-gray-500">
+                  <Layers size={14} className="text-indigo-600" />
+                  <span>Layout Parser & Contextual Chunking Sandbox</span>
+                </div>
+                <button
+                  onClick={handleRunDocAiTest}
+                  disabled={isTestingDocAi}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {isTestingDocAi ? <Loader2 size={14} className="animate-spin" /> : <Cpu size={14} />}
+                  Run Chunker Test
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5">
+                  Sample Markdown / Document Hierarchy Input
+                </label>
+                <textarea
+                  value={testSampleInput}
+                  onChange={(e) => setTestSampleInput(e.target.value)}
+                  rows={6}
+                  className="w-full p-3.5 bg-slate-950 text-emerald-400 font-mono text-xs rounded-xl border border-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none leading-relaxed"
+                  placeholder="Paste document text or markdown structure to test contextual chunking..."
+                />
+              </div>
+
+              {/* Test Output Results */}
+              {docAiTestResult && (
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Result Engine:</span>
+                      <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded font-mono text-[10px] font-bold">
+                        {docAiTestResult.parserUsed}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Chunks Created:</span>
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-mono text-[10px] font-black">
+                        {docAiTestResult.chunks?.length || 0}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="max-h-[220px] overflow-y-auto space-y-2.5 pr-1">
+                    {docAiTestResult.chunks?.map((chunk: any, idx: number) => (
+                      <div key={idx} className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs text-left">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-[10px] font-mono font-black text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
+                            Chunk #{idx + 1} {chunk.heading ? `• ${chunk.heading}` : ""}
+                          </span>
+                          <span className="text-[9px] text-gray-400 font-mono">
+                            {(chunk.text || chunk).length} chars
+                          </span>
+                        </div>
+                        <pre className="text-[11px] font-mono text-slate-700 whitespace-pre-wrap leading-relaxed bg-slate-50/70 p-2 rounded-lg border border-slate-100">
+                          {chunk.text || chunk}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Global Settings Section */}
         <div className="mt-12 bg-white rounded-[2.5rem] shadow-sm border-2 border-oca-blue p-8">
           <div className="flex items-center gap-4 mb-8">
@@ -2500,6 +3098,58 @@ export default function AdminPanel() {
               </button>
             </div>
           </div>
+
+          {/* Feature Toggles for Chat Widget */}
+          {embedTab === "chat" && (
+            <div className="mb-6 p-5 bg-slate-50 border border-slate-150 rounded-xl flex flex-col sm:flex-row sm:items-center gap-6 justify-start text-left">
+              <div className="text-xs space-y-1">
+                <h4 className="font-bold text-gray-700 uppercase tracking-wide">Configure Embedded Features</h4>
+                <p className="text-gray-500">Enable or disable features inside the generated embed widget code.</p>
+              </div>
+              
+              <div className="flex flex-wrap gap-6">
+                <label className="flex items-center gap-3 cursor-pointer select-none group">
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      checked={enableEmbedMediaFeedback} 
+                      onChange={(e) => setEnableEmbedMediaFeedback(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <div className={cn(
+                      "w-10 h-6 rounded-full transition-colors",
+                      enableEmbedMediaFeedback ? "bg-oca-blue" : "bg-gray-200"
+                    )} />
+                    <div className={cn(
+                      "absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform shadow-sm",
+                      enableEmbedMediaFeedback && "translate-x-4"
+                    )} />
+                  </div>
+                  <span className="text-xs font-bold text-gray-650 group-hover:text-gray-900 transition-colors">Media Feedback</span>
+                </label>
+
+                <label className="flex items-center gap-3 cursor-pointer select-none group">
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      checked={enableEmbedPersona} 
+                      onChange={(e) => setEnableEmbedPersona(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <div className={cn(
+                      "w-10 h-6 rounded-full transition-colors",
+                      enableEmbedPersona ? "bg-oca-blue" : "bg-gray-200"
+                    )} />
+                    <div className={cn(
+                      "absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform shadow-sm",
+                      enableEmbedPersona && "translate-x-4"
+                    )} />
+                  </div>
+                  <span className="text-xs font-bold text-gray-650 group-hover:text-gray-900 transition-colors">Persona Feature</span>
+                </label>
+              </div>
+            </div>
+          )}
           
           <div className="relative group">
             {embedTab === "chat" ? (
@@ -2510,7 +3160,7 @@ export default function AdminPanel() {
   (function() {
     const APP_URL = "${window.location.origin}";
     const iframe = document.createElement('iframe');
-    iframe.src = \`\${APP_URL}/widget\`;
+    iframe.src = \`\${APP_URL}/widget${embedQuery}\`;
     
     // Anti-stretching styles: No transition initially to prevent "stretching up" animation
     const initialStyles = "display:block !important;position:fixed !important;bottom:20px !important;right:20px !important;left:auto !important;width:60px !important;height:60px !important;min-width:60px !important;max-width:60px !important;min-height:60px !important;max-height:60px !important;border:none !important;z-index:2147483647 !important;border-radius:50% !important;box-shadow:0 4px 12px rgba(0,0,0,0.15) !important;overflow:hidden !important;background:transparent !important;margin:0 !important;padding:0 !important;transition:none !important;";
@@ -2526,11 +3176,11 @@ export default function AdminPanel() {
         
         if (event.data.isOpen) {
           iframe.style.setProperty('width', '400px', 'important');
-          iframe.style.setProperty('height', '600px', 'important');
-          iframe.style.setProperty('min-width', '400px', 'important');
+          iframe.style.setProperty('height', '520px', 'important');
+          iframe.style.setProperty('min-width', '360px', 'important');
           iframe.style.setProperty('max-width', '400px', 'important');
-          iframe.style.setProperty('min-height', '600px', 'important');
-          iframe.style.setProperty('max-height', '600px', 'important');
+          iframe.style.setProperty('min-height', '400px', 'important');
+          iframe.style.setProperty('max-height', 'calc(100vh - 40px)', 'important');
           iframe.style.setProperty('border-radius', '20px', 'important');
         } else {
           iframe.style.setProperty('width', '60px', 'important');
@@ -2553,7 +3203,7 @@ export default function AdminPanel() {
   (function() {
     const APP_URL = "${window.location.origin}";
     const iframe = document.createElement('iframe');
-    iframe.src = \`\${APP_URL}/widget\`;
+    iframe.src = \`\${APP_URL}/widget${embedQuery}\`;
     
     const initialStyles = "display:block !important;position:fixed !important;bottom:20px !important;right:20px !important;left:auto !important;width:60px !important;height:60px !important;min-width:60px !important;max-width:60px !important;min-height:60px !important;max-height:60px !important;border:none !important;z-index:2147483647 !important;border-radius:50% !important;box-shadow:0 4px 12px rgba(0,0,0,0.15) !important;transition:none !important;overflow:hidden !important;background:transparent !important;margin:0 !important;padding:0 !important;";
     iframe.style.cssText = initialStyles;
@@ -2567,11 +3217,11 @@ export default function AdminPanel() {
         
         if (event.data.isOpen) {
           iframe.style.setProperty('width', '400px', 'important');
-          iframe.style.setProperty('height', '600px', 'important');
-          iframe.style.setProperty('min-width', '400px', 'important');
+          iframe.style.setProperty('height', '520px', 'important');
+          iframe.style.setProperty('min-width', '360px', 'important');
           iframe.style.setProperty('max-width', '400px', 'important');
-          iframe.style.setProperty('min-height', '600px', 'important');
-          iframe.style.setProperty('max-height', '600px', 'important');
+          iframe.style.setProperty('min-height', '400px', 'important');
+          iframe.style.setProperty('max-height', 'calc(100vh - 40px)', 'important');
           iframe.style.setProperty('border-radius', '20px', 'important');
         } else {
           iframe.style.setProperty('width', '60px', 'important');
@@ -2635,7 +3285,7 @@ export default function AdminPanel() {
               </p>
               {embedTab === "chat" ? (
                 <p>
-                  Example Chat context: <code>iframe.src = {'`${'}APP_URL{`}/widget?unit=GD101\``};</code>
+                  Example Chat context: <code>iframe.src = {'`${'}APP_URL{`}/widget${embedQuery}${embedQuery ? '&' : '?'}unit=GD101\``};</code>
                 </p>
               ) : (
                 <p>

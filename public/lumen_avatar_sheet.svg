@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 680" width="100%" height="100%">
+  <defs>
+    <!-- Styling and Fonts -->
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800;900&amp;family=JetBrains+Mono:wght@500;700&amp;display=swap');
+      
+      .title { font-family: 'Poppins', sans-serif; font-weight: 900; font-size: 34px; fill: #060645; letter-spacing: -1px; text-transform: uppercase; }
+      .subtitle { font-family: 'Poppins', sans-serif; font-weight: 600; font-size: 14px; fill: #5998d2; letter-spacing: 2px; text-transform: uppercase; }
+      .desc { font-family: 'Poppins', sans-serif; font-weight: 400; font-size: 13px; fill: #060645; opacity: 0.7; }
+      
+      .grid-title { font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 16px; fill: #060645; text-transform: uppercase; letter-spacing: -0.5px; }
+      .grid-label { font-family: 'Poppins', sans-serif; font-weight: 600; font-size: 12px; fill: #060645; opacity: 0.8; }
+      .grid-hex { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px; fill: #5998d2; }
+      
+      .badge-label { font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 11px; fill: #ffffff; letter-spacing: 1px; text-transform: uppercase; }
+      
+      /* Neobrutalist classes */
+      .brutalist-card { stroke: #060645; stroke-width: 3; fill: #ffffff; }
+      .brutalist-stroke { stroke: #060645; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .shadow-block { fill: rgba(6, 6, 69, 0.08); }
+    </style>
+
+    <!-- Drop Shadows -->
+    <filter id="brutalist-shadow" x="-5%" y="-5%" width="120%" height="120%">
+      <feOffset in="SourceAlpha" dx="8" dy="8" result="offset" />
+      <feGaussianBlur stdDeviation="0" result="blur" />
+      <feColorMatrix type="matrix" values="0 0 0 0 0.023   0 0 0 0 0.023   0 0 0 0 0.254  0 0 0 0.1 0" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1000" height="680" fill="#f4f6f9" rx="24" />
+  
+  <!-- Grid Accent Lines (Aesthetic Blueprint Style) -->
+  <g stroke="rgba(6, 6, 69, 0.03)" stroke-width="1">
+    <line x1="50" y1="0" x2="50" y2="680" />
+    <line x1="150" y1="0" x2="150" y2="680" />
+    <line x1="250" y1="0" x2="250" y2="680" />
+    <line x1="350" y1="0" x2="350" y2="680" />
+    <line x1="450" y1="0" x2="450" y2="680" />
+    <line x1="550" y1="0" x2="550" y2="680" />
+    <line x1="650" y1="0" x2="650" y2="680" />
+    <line x1="750" y1="0" x2="750" y2="680" />
+    <line x1="850" y1="0" x2="850" y2="680" />
+    <line x1="950" y1="0" x2="950" y2="680" />
+    
+    <line x1="0" y1="50" x2="1000" y2="50" />
+    <line x1="0" y1="150" x2="1000" y2="150" />
+    <line x1="0" y1="250" x2="1000" y2="250" />
+    <line x1="0" y1="350" x2="1000" y2="350" />
+    <line x1="0" y1="450" x2="1000" y2="450" />
+    <line x1="0" y1="550" x2="1000" y2="550" />
+  </g>
+
+  <!-- ==================== HEADER ==================== -->
+  <g transform="translate(60, 65)">
+    <text class="subtitle" x="0" y="0">Open College of the Arts</text>
+    <text class="title" x="0" y="38">Lumen <tspan fill="#edc84e">Avatar</tspan> Asset Sheet</text>
+    <text class="desc" x="0" y="62">Complete geometry blueprint and corporate color-token specification for the OCA digital estate.</text>
+  </g>
+
+  <!-- ==================== MAIN MASTER SHOWCASE ==================== -->
+  <!-- Shadow Underlay -->
+  <rect x="60" y="160" width="380" height="460" rx="30" class="shadow-block" />
+  <!-- Card Container -->
+  <rect x="52" y="152" width="380" height="460" rx="30" class="brutalist-card" />
+  
+  <g transform="translate(52, 152)">
+    <!-- Card Accent Tag -->
+    <rect x="30" y="30" width="160" height="28" rx="8" fill="#060645" />
+    <text class="badge-label" x="42" y="48">Master Avatar</text>
+    
+    <!-- Central Combined Gem Art (Lumen Morph) -->
+    <!-- Large nested background dynamic forms -->
+    <g transform="translate(190, 230)">
+      <!-- Yellow Circle Backdrop -->
+      <circle cx="0" cy="0" r="100" fill="#edc84e" opacity="0.15" />
+      
+      <!-- Overlapping colorful shapes mimicking dynamic merge -->
+      <path d="M -60 -60 H 60 A 30 30 0 0 1 90 -30 V 60 A 30 30 0 0 1 60 90 H -60 A 30 30 0 0 1 -90 60 V -30 A 30 30 0 0 1 -60 -60 Z" fill="#ffcdfe" opacity="0.4" transform="rotate(15)" />
+      <polygon points="0,-110 95,55 -95,55" fill="#069170" opacity="0.25" transform="rotate(-30)" />
+      <path d="M 110,0 H 0 A 110,110 0 0,0 0,110 H 110 Z" fill="#f17864" opacity="0.3" transform="rotate(45)" />
+      
+      <!-- Primary Core Silhouette icon with thick stroke -->
+      <g transform="translate(-40, -40) scale(2.5)" stroke="#060645" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Minimalist Bot/Compass Symbolism -->
+        <rect x="6" y="6" width="20" height="20" rx="6" fill="#ffffff" stroke-width="2.5" />
+        <circle cx="11" cy="14" r="2" fill="#060645" />
+        <circle cx="21" cy="14" r="2" fill="#060645" />
+        <path d="M 11 20 Q 16 23 21 20" stroke-width="2" />
+        <path d="M 16 6 L 16 2" stroke-width="2.5" />
+        <circle cx="16" cy="2" r="1.5" fill="#edc84e" stroke-width="1.5" />
+      </g>
+    </g>
+
+    <!-- Legend bottom labels -->
+    <text class="grid-title" x="30" y="395">LUMEN IDENTITY CORE</text>
+    <text class="desc" x="30" y="415">Continuous 8-step morphing loop representing</text>
+    <text class="desc" x="30" y="431">creative growth, adaptability, and dialogue.</text>
+  </g>
+
+
+  <!-- ==================== THE 8 INDIVIDUAL GEOMETRIC STATES ==================== -->
+  <text class="grid-title" x="480" y="175">Individual Morph Stages &amp; Palette</text>
+
+  <!-- Row 1 Items -->
+  <!-- State 1: Circle -->
+  <g transform="translate(480, 200)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#edc84e">
+      <circle cx="0" cy="0" r="30" class="brutalist-stroke" />
+    </g>
+    <text class="grid-label" x="12" y="130">1. Circle</text>
+    <text class="grid-hex" x="12" y="148">#EDC84E</text>
+    <text class="grid-hex" x="12" y="162">Cadmium Yellow</text>
+  </g>
+
+  <!-- State 2: Squircle -->
+  <g transform="translate(605, 200)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#ffcdfe" class="brutalist-stroke">
+      <path d="M -18 -30 H 18 A 12 12 0 0 1 30 -18 V 18 A 12 12 0 0 1 18 30 H -18 A 12 12 0 0 1 -30 18 V -18 A 12 12 0 0 1 -18 -30 Z" />
+    </g>
+    <text class="grid-label" x="12" y="130">2. Squircle</text>
+    <text class="grid-hex" x="12" y="148">#FFCDFE</text>
+    <text class="grid-hex" x="12" y="162">Pink Tint</text>
+  </g>
+
+  <!-- State 3: Half-Circle -->
+  <g transform="translate(730, 200)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#f17864" class="brutalist-stroke">
+      <path d="M 28,-28 H -2 A 30,30 0 0,0 -2,32 H 28 Z" />
+    </g>
+    <text class="grid-label" x="12" y="130">3. Half Circle</text>
+    <text class="grid-hex" x="12" y="148">#F17864</text>
+    <text class="grid-hex" x="12" y="162">OCA Scarlet</text>
+  </g>
+
+  <!-- State 4: Slanted Polygon -->
+  <g transform="translate(855, 200)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#8affd7" class="brutalist-stroke">
+      <polygon points="-15,-30 30,-30 15,30 -30,30" />
+    </g>
+    <text class="grid-label" x="12" y="130">4. Slant Poly</text>
+    <text class="grid-hex" x="12" y="148">#8AFFD7</text>
+    <text class="grid-hex" x="12" y="162">Green Tint</text>
+  </g>
+
+
+  <!-- Row 2 Items -->
+  <!-- State 5: Arch -->
+  <g transform="translate(480, 400)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#5998d2" class="brutalist-stroke">
+      <path d="M -30,30 V 0 A 30,30 0 0,1 30,0 V 30 Z" />
+    </g>
+    <text class="grid-label" x="12" y="130">5. Dome Arch</text>
+    <text class="grid-hex" x="12" y="148">#5998D2</text>
+    <text class="grid-hex" x="12" y="162">OCA Cerulean</text>
+  </g>
+
+  <!-- State 6: Left Bite -->
+  <g transform="translate(605, 400)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#fff488" class="brutalist-stroke">
+      <path d="M 30,-30 V 30 H -30 A 30,30 0 0,1 -30,-30 Z" />
+    </g>
+    <text class="grid-label" x="12" y="130">6. Corner Bite</text>
+    <text class="grid-hex" x="12" y="148">#FFF488</text>
+    <text class="grid-hex" x="12" y="162">Yellow Tint</text>
+  </g>
+
+  <!-- State 7: Triangle Peak -->
+  <g transform="translate(730, 400)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="#069170" class="brutalist-stroke">
+      <polygon points="0,-30 30,30 -30,30" />
+    </g>
+    <text class="grid-label" x="12" y="130">7. Triangle</text>
+    <text class="grid-hex" x="12" y="148">#069170</text>
+    <text class="grid-hex" x="12" y="162">OCA Verdigris</text>
+  </g>
+
+  <!-- State 8: Core Bot Icon -->
+  <g transform="translate(855, 400)">
+    <rect width="105" height="180" rx="16" fill="#ffffff" stroke="#060645" stroke-width="1.5" />
+    <g transform="translate(52, 60)" fill="none" stroke="#060645" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="-18" y="-18" width="36" height="36" rx="10" fill="#ffffff" />
+      <circle cx="-7" cy="2" r="2.5" fill="#060645" />
+      <circle cx="7" cy="2" r="2.5" fill="#060645" />
+      <path d="M -7 10 Q 0 14 7 10" stroke-width="2" />
+      <path d="M 0 -18 V -25" stroke-width="2.5" />
+      <circle cx="0" cy="-25" r="2" fill="#edc84e" />
+    </g>
+    <text class="grid-label" x="12" y="130">8. Bot Core</text>
+    <text class="grid-hex" x="12" y="148">#060645</text>
+    <text class="grid-hex" x="12" y="162">OCA Navy Blue</text>
+  </g>
+</svg>

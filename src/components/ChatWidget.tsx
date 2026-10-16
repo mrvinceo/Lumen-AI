@@ -127,6 +127,8 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
   const [files, setFiles] = useState<{ data: string; mimeType: string; name: string }[]>([]);
   const [themes, setThemes] = useState<FeedbackTheme[]>([]);
   const [selectedThemeId, setSelectedThemeId] = useState<string | null>(null);
+  const [mediaEnabled, setMediaEnabled] = useState(true);
+  const [personasEnabled, setPersonasEnabled] = useState(true);
   
   // Session management states
   const [sessions, setSessions] = useState<any[]>([]);
@@ -537,9 +539,17 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
     const params = new URLSearchParams(window.location.search);
     const unitParam = params.get("unit");
     const personaParam = params.get("persona");
-    console.log("ChatWidget initialized with unit:", unitParam, "persona:", personaParam);
+    const mediaParam = params.get("media");
+    const personasParam = params.get("personas");
+    
+    const isMedia = mediaParam !== "false";
+    const isPersonas = personasParam !== "false";
+    setMediaEnabled(isMedia);
+    setPersonasEnabled(isPersonas);
+
+    console.log("ChatWidget initialized with unit:", unitParam, "persona:", personaParam, "media:", isMedia, "personas:", isPersonas);
     if (unitParam) setUnit(unitParam);
-    if (personaParam) setSelectedPersonaId(personaParam);
+    if (isPersonas && personaParam) setSelectedPersonaId(personaParam);
 
     // Auth and Session Sync
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
@@ -550,6 +560,11 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
 
         // Fetch Feedback Themes once authenticated
         const fetchThemes = async () => {
+          if (!isMedia) {
+            setThemes([]);
+            setSelectedThemeId(null);
+            return;
+          }
           try {
             const q = query(collection(db, "feedbackThemes"), orderBy("createdAt", "desc"));
             const snapshot = await getDocs(q);
@@ -566,6 +581,12 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
 
         // Fetch Personas
         const fetchPersonas = async () => {
+          if (!isPersonas) {
+            setPersonas([]);
+            setActivePersona(null);
+            setSelectedPersonaId(null);
+            return;
+          }
           try {
             const snapshot = await getDocs(collection(db, "personas"));
             const fetchedPersonas = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Persona));
@@ -659,9 +680,65 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
     }
   };
 
+  // Scroll management:
+  // - When a user message is sent, scroll to bottom to show prompt and thinking indicator.
+  // - When a model response arrives, scroll to the START of the response so the user reads from the beginning.
+  const prevMessagesCountRef = useRef(messages.length);
+  const isInitialMountRef = useRef(true);
+
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!scrollRef.current) return;
+    
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      prevMessagesCountRef.current = messages.length;
+      if (messages.length > 0) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+      return;
+    }
+
+    prevMessagesCountRef.current = messages.length;
+    if (messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    const lastIndex = messages.length - 1;
+
+    if (lastMsg.role === "user") {
+      // User sent a message -> scroll to bottom to show user message & thinking indicator
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth"
+      });
+    } else if (lastMsg.role === "model") {
+      // Model responded -> scroll so that the top/beginning of this response is visible at the top of the chat area
+      const scrollToModelStart = () => {
+        if (!scrollRef.current) return;
+        const msgElement = document.getElementById(`chat-msg-${lastIndex}`);
+        if (msgElement) {
+          const containerRect = scrollRef.current.getBoundingClientRect();
+          const elementRect = msgElement.getBoundingClientRect();
+          const targetScrollTop = scrollRef.current.scrollTop + (elementRect.top - containerRect.top) - 12;
+          scrollRef.current.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: "smooth"
+          });
+        } else {
+          scrollRef.current.scrollTo({
+            top: scrollRef.current.scrollHeight,
+            behavior: "smooth"
+          });
+        }
+      };
+
+      // Perform immediately on next frame and after brief ticks for markdown/media layout rendering
+      requestAnimationFrame(scrollToModelStart);
+      const timer1 = setTimeout(scrollToModelStart, 60);
+      const timer2 = setTimeout(scrollToModelStart, 200);
+      return () => {
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+      };
     }
   }, [messages]);
 
@@ -777,12 +854,13 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
                 
 ${context}
 
-Using ONLY the information above, please provide a detailed and accurate answer to my question: "${input}". 
-If the information doesn't directly answer the question, explain what was found and how it relates.`;
+Using ONLY the information above, please provide a concise, succinct, and accurate answer to my question: "${input}". 
+Summarize the key points clearly with sufficient detail to answer the question, avoiding unnecessary verbosity or filler.
+If the information doesn't directly answer the question, briefly explain what was found and how it relates.`;
               } else {
                 addLog("WARNING: No results found in knowledge base.");
                 contextMessage = `I searched the OCA knowledge base for "${searchQuery}" but found NO relevant information. 
-                Please inform the user that you couldn't find specific details about this in the course materials and suggest they contact student services or their tutor for clarification. 
+                Please inform the user succinctly that you couldn't find specific details about this in the course materials and suggest they contact student services or their tutor for clarification. 
                 DO NOT make up information or use your internal knowledge to answer specific course structure questions if the search returned nothing.`;
               }
 
@@ -948,39 +1026,50 @@ If the information doesn't directly answer the question, explain what was found 
   };
 
   const ChatContent = (
-    <div className={cn("bg-white flex flex-col overflow-hidden", forceOpen ? "w-full h-screen" : "w-[400px] h-[600px] rounded-2xl shadow-2xl border border-gray-200")}>
+    <div className={cn(
+      "bg-white flex flex-col overflow-hidden",
+      forceOpen 
+        ? "w-full h-screen" 
+        : isWidget 
+          ? "w-full h-full rounded-[20px] shadow-none border-0" 
+          : "w-[380px] sm:w-[400px] h-[520px] max-h-[calc(100vh-100px)] rounded-2xl shadow-2xl border border-gray-200"
+    )}>
       {/* Header */}
-      <div className="p-4 bg-oca-blue text-white flex items-center justify-between shadow-lg z-10">
-          <div className="flex items-center gap-3">
-            <div 
-              className="cursor-help transition-transform hover:scale-110 active:scale-95"
-              onClick={() => setShowDebug(!showDebug)}
-              title="Click for debug logs"
+      <div className="p-3.5 bg-oca-blue text-white flex items-center justify-between shadow-lg z-10">
+        <div className="flex items-center gap-2.5 min-w-0">
+          {!forceOpen && (
+            <button 
+              onClick={() => setIsOpen(false)} 
+              className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors flex-shrink-0"
+              title="Close Chat"
             >
-              <BotAvatar size="base" isThinking={false} />
-            </div>
-            <div className="flex flex-col">
-              <h3 className="font-black text-xl leading-none uppercase tracking-tight">
-                {activePersona ? activePersona.display_name : "Lumen"}
-              </h3>
-              <p className="text-[10px] text-oca-blue-tint font-bold uppercase tracking-widest mt-0.5 whitespace-nowrap opacity-80">
-                {activePersona ? "Specialist Persona" : "OCA Creative Arts Tutor"}
-              </p>
-            </div>
+              <X size={18} />
+            </button>
+          )}
+          <div 
+            className="cursor-help transition-transform hover:scale-110 active:scale-95 flex-shrink-0"
+            onClick={() => setShowDebug(!showDebug)}
+            title="Click for debug logs"
+          >
+            <BotAvatar size="base" isThinking={false} />
           </div>
-        <div className="flex items-center gap-2">
+          <div className="flex flex-col min-w-0">
+            <h3 className="font-black text-lg leading-none uppercase tracking-tight truncate">
+              {activePersona ? activePersona.display_name : "Lumen"}
+            </h3>
+            <p className="text-[10px] text-oca-blue-tint font-bold uppercase tracking-widest mt-0.5 whitespace-nowrap opacity-80 truncate">
+              {activePersona ? "Specialist Persona" : "OCA Creative Arts Tutor"}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
           {auth.currentUser && !auth.currentUser.isAnonymous && (
             <button 
               onClick={handleLogout}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
               title="Logout"
             >
-              <LogOut size={18} />
-            </button>
-          )}
-          {!forceOpen && (
-            <button onClick={() => setIsOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-              <X size={20} />
+              <LogOut size={16} />
             </button>
           )}
         </div>
@@ -1165,7 +1254,11 @@ If the information doesn't directly answer the question, explain what was found 
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={cn("flex gap-3", msg.role === "user" ? "flex-row-reverse" : "flex-row")}>
+          <div 
+            key={msg.id || `msg-${i}`} 
+            id={`chat-msg-${i}`}
+            className={cn("flex gap-3 scroll-mt-3", msg.role === "user" ? "flex-row-reverse" : "flex-row")}
+          >
             <div className={cn("flex-shrink-0")}>
               {msg.role === "user" ? (
                 <div className="w-8 h-8 rounded-full flex items-center justify-center bg-oca-blue-tint text-oca-blue border border-oca-blue">
@@ -1248,7 +1341,7 @@ If the information doesn't directly answer the question, explain what was found 
 
       {/* Input */}
       <div className="p-4 bg-white border-t border-gray-200">
-        {personas.length > 0 && (
+        {personasEnabled && personas.length > 0 && (
           <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
             <div className="flex flex-shrink-0 items-center gap-1 p-1 bg-gray-50 rounded-lg border border-gray-100">
               <Bot size={14} className="text-gray-400 ml-1" />
@@ -1270,7 +1363,7 @@ If the information doesn't directly answer the question, explain what was found 
             )}
           </div>
         )}
-        {files.length > 0 && (
+        {mediaEnabled && files.length > 0 && (
           <div className="mb-3 space-y-2">
             <div className="flex flex-wrap gap-2">
               {files.map((f, idx) => (
@@ -1308,20 +1401,24 @@ If the information doesn't directly answer the question, explain what was found 
           </div>
         )}
         <div className="flex items-center gap-2">
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="p-2 text-gray-400 hover:text-oca-blue hover:bg-oca-blue-tint rounded-full transition-colors"
-          >
-            <Paperclip size={20} />
-          </button>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            className="hidden" 
-            accept="image/*,audio/*,video/*"
-            multiple
-          />
+          {mediaEnabled && (
+            <>
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-gray-400 hover:text-oca-blue hover:bg-oca-blue-tint rounded-full transition-colors"
+              >
+                <Paperclip size={20} />
+              </button>
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileChange} 
+                className="hidden" 
+                accept="image/*,audio/*,video/*"
+                multiple
+              />
+            </>
+          )}
           <input
             type="text"
             value={input}
@@ -1350,34 +1447,36 @@ If the information doesn't directly answer the question, explain what was found 
 
   if (isWidget) {
     return (
-      <div className="w-full h-full flex items-end justify-end bg-transparent overflow-hidden">
+      <div className="w-full h-full flex flex-col items-center justify-center bg-transparent overflow-hidden m-0 p-0">
         <AnimatePresence mode="wait">
           {isOpen ? (
             <motion.div
               key="chat-content"
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              transition={{ duration: 0.2 }}
-              className="w-full h-full flex items-end justify-end"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.15 }}
+              className="w-full h-full flex flex-col overflow-hidden"
             >
               {ChatContent}
             </motion.div>
           ) : (
-            <motion.button
-              key="chat-button"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setIsOpen(true)}
-              className="w-14 h-14 bg-white text-oca-blue rounded-full shadow-2xl flex items-center justify-center hover:bg-oca-blue-tint transition-all flex-shrink-0 m-0 border-2 border-oca-blue group"
-            >
-              <div className="group-hover:scale-110 transition-transform">
-                <BotAvatar size="base" isThinking={false} className="bg-transparent border-none shadow-none" />
-              </div>
-            </motion.button>
+            <div className="w-full h-full flex items-center justify-center">
+              <motion.button
+                key="chat-button"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsOpen(true)}
+                className="w-14 h-14 bg-white text-oca-blue rounded-full shadow-xl flex items-center justify-center hover:bg-oca-blue-tint transition-all flex-shrink-0 m-0 border-2 border-oca-blue group cursor-pointer"
+              >
+                <div className="group-hover:scale-110 transition-transform">
+                  <BotAvatar size="base" isThinking={false} className="bg-transparent border-none shadow-none" />
+                </div>
+              </motion.button>
+            </div>
           )}
         </AnimatePresence>
       </div>
@@ -1385,7 +1484,7 @@ If the information doesn't directly answer the question, explain what was found 
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
+    <div className="fixed bottom-6 right-6 z-[9999]">
       <AnimatePresence>
         {isOpen && (
           <motion.div

@@ -92,7 +92,7 @@ function LandingPage() {
 
   return (
     <div className="min-h-screen bg-white text-oca-blue font-sans selection:bg-oca-blue-tint selection:text-oca-blue">
-      <nav className="max-w-7xl mx-auto px-6 py-4 md:py-8 flex items-center justify-between border-b border-gray-100 relative z-[60]">
+      <nav className="max-w-7xl mx-auto px-6 py-4 md:py-8 flex items-center justify-between border-b border-gray-100 relative z-30">
         <OCALogo />
         
         {/* Desktop Links */}

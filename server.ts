@@ -12,6 +12,12 @@ import AdmZip from "adm-zip";
 import mammoth from "mammoth";
 import fs from "fs";
 import crypto from "crypto";
+import { 
+  parseDocumentBuffer, 
+  getDocumentAiConfig, 
+  saveDocumentAiConfig,
+  createSemanticChunks 
+} from "./server/documentAiService";
 
 dotenv.config();
 
@@ -200,6 +206,10 @@ async function startServer() {
   app.use(cookieParser());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
 
   // LTI 1.3 OIDC Login Initiation (Initiate Login Endpoint)
   app.all("/lti/login", (req, res) => {
@@ -1000,6 +1010,11 @@ async function startServer() {
           --- TECHNICAL TASK CONTEXT START ---
           ${systemText}
           --- TECHNICAL TASK CONTEXT END ---
+
+          # RESPONSE STYLE & CONCISENESS:
+          - Deliver all responses, answers, insights, and guidance in a concise and succinct manner.
+          - Summarize thoughts, advice, and facts directly with sufficient depth and clarity, without unnecessary filler or rambling.
+          - Stay completely true to your persona's distinctive personality, tone, and perspective while keeping replies focused and digestible.
 
           # FINAL COMMAND:
           Never refer to yourself as an AI or mention that you are "Based on" a persona. You ARE the persona described in the CORE IDENTITY. Use 'I', 'me', 'my', do NOT refer to yourself in the third person.
@@ -1861,8 +1876,86 @@ async function startServer() {
     }
   });
 
+  // Document AI Status and Configuration API
+  app.get("/api/document-ai/status", async (req, res) => {
+    try {
+      const config = await getDocumentAiConfig();
+      const isConfigured = Boolean(config.processorId && config.processorId.trim().length > 0);
+      res.json({
+        success: true,
+        configured: isConfigured,
+        processorId: config.processorId || "",
+        location: config.location || "us",
+        projectId: config.projectId || "gen-lang-client-0701859835",
+        enableDocumentAi: config.enableDocumentAi ?? true,
+        activeBackend: isConfigured && config.enableDocumentAi !== false ? "document_ai_layout_parser" : "gemini_layout_parser",
+        supportedFeatures: [
+          "Layout-Aware PDF Parsing",
+          "Markdown Table Reconstruction",
+          "Hierarchical Ancestor Heading Chunking",
+          "Semantic Section Segmentation",
+          "Multi-column Reading Order Correction"
+        ]
+      });
+    } catch (err: any) {
+      console.error("[DocumentAI] Status check error:", err);
+      res.status(500).json({ error: "Failed to retrieve Document AI status", details: err.message });
+    }
+  });
+
+  app.post("/api/document-ai/config", async (req, res) => {
+    try {
+      const { processorId, location, projectId, enableDocumentAi } = req.body;
+      const updatedConfig = await saveDocumentAiConfig({
+        processorId,
+        location,
+        projectId,
+        enableDocumentAi
+      });
+      
+      res.json({ 
+        success: true, 
+        message: "Document AI configuration updated successfully",
+        config: updatedConfig 
+      });
+    } catch (err: any) {
+      console.error("[DocumentAI] Failed to save config:", err);
+      res.status(500).json({ error: "Failed to save Document AI configuration", details: err.message });
+    }
+  });
+
+  app.post("/api/document-ai/test-parse", async (req, res) => {
+    try {
+      const { base64Pdf, sampleText } = req.body;
+      const activeApiKey = getApiKey();
+
+      if (base64Pdf) {
+        const pdfBuffer = Buffer.from(base64Pdf, "base64");
+        const parseResult = await parseDocumentBuffer(pdfBuffer, activeApiKey);
+        return res.json(parseResult);
+      }
+
+      if (sampleText) {
+        // Run contextual semantic chunker on sample text
+        const chunks = createSemanticChunks(sampleText, 1000);
+        return res.json({
+          success: true,
+          parserUsed: "contextual_semantic_chunker",
+          chunks,
+          fullText: sampleText,
+          chunksCount: chunks.length
+        });
+      }
+
+      return res.status(400).json({ error: "Please provide either base64Pdf or sampleText to test." });
+    } catch (err: any) {
+      console.error("[DocumentAI] Test parse error:", err);
+      res.status(500).json({ error: "Document parse test failed", details: err.message });
+    }
+  });
+
   app.post("/api/drive/content", async (req, res) => {
-    const { tokens, fileId } = req.body;
+    const { tokens, fileId, returnChunks } = req.body;
     const token = tokens?.access_token;
     
     console.log(`[DriveProxy] Fetching content for file ${fileId}`);
@@ -1888,9 +1981,21 @@ async function startServer() {
           fileId,
           mimeType: "text/plain",
         });
-        return res.send(response.data);
+        const docText = String(response.data || "");
+        if (returnChunks) {
+          const chunks = createSemanticChunks(docText, 1200);
+          return res.json({
+            success: true,
+            fileName,
+            mimeType,
+            parserUsed: "google_docs_semantic_chunker",
+            chunks,
+            text: docText
+          });
+        }
+        return res.send(docText);
       } else if (mimeType === "application/pdf") {
-        // Robust PDF Handling using Gemini 1.5 Flash for text extraction
+        // High-fidelity Layout Parsing (Document AI with Gemini layout understanding fallback)
         const driveResponse = await drive.files.get(
           { fileId, alt: "media" },
           { responseType: "arraybuffer" }
@@ -1899,30 +2004,31 @@ async function startServer() {
         try {
           const pdfBuffer = Buffer.from(driveResponse.data as ArrayBuffer);
           const activeApiKey = getApiKey();
-          if (!activeApiKey) throw new Error("API Key missing for PDF extraction");
+          
+          const parseResult = await parseDocumentBuffer(pdfBuffer, activeApiKey);
+          
+          console.log(`[DriveProxy] Layout parser (${parseResult.parserUsed}) generated ${parseResult.chunks.length} contextual chunks for ${fileName}`);
+          
+          if (returnChunks) {
+            return res.json({
+              success: true,
+              fileName,
+              mimeType,
+              parserUsed: parseResult.parserUsed,
+              chunks: parseResult.chunks,
+              text: parseResult.fullText,
+              stats: {
+                pagesCount: parseResult.pagesCount,
+                tablesDetected: parseResult.tablesDetected,
+                chunksCount: parseResult.chunks.length
+              }
+            });
+          }
 
-          // Use Gemini Flash (fast & efficient for OCR/text extraction)
-          const ai = new GoogleGenAI({ apiKey: activeApiKey });
-          const geminiResponse = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: [
-              {
-                inlineData: {
-                  data: pdfBuffer.toString("base64"),
-                  mimeType: "application/pdf"
-                }
-              },
-              "Extract all text content from this PDF. Output only the extracted text content. Do not describe the document."
-            ]
-          });
-          
-          const text = geminiResponse.text;
-          if (!text) throw new Error("No text content returned from Gemini during PDF extraction");
-          
-          console.log(`[DriveProxy] Successfully extracted ${text.length} chars from PDF: ${fileName}`);
-          return res.send(text);
+          // Backwards-compatible text response
+          return res.send(parseResult.fullText);
         } catch (pdfErr: any) {
-          console.error(`[DriveProxy] PDF Extraction failed for ${fileName}:`, pdfErr.message);
+          console.error(`[DriveProxy] PDF Layout Extraction failed for ${fileName}:`, pdfErr.message);
           res.status(500).json({ error: "PDF_EXTRACTION_FAILED", details: pdfErr.message });
           return;
         }
@@ -1933,14 +2039,38 @@ async function startServer() {
           { responseType: "arraybuffer" }
         );
         const data = await mammoth.extractRawText({ buffer: Buffer.from(response.data as ArrayBuffer) });
-        return res.send(data.value);
+        const docxText = data.value || "";
+        if (returnChunks) {
+          const chunks = createSemanticChunks(docxText, 1200);
+          return res.json({
+            success: true,
+            fileName,
+            mimeType,
+            parserUsed: "mammoth_docx_semantic_chunker",
+            chunks,
+            text: docxText
+          });
+        }
+        return res.send(docxText);
       } else {
         // Fallback for other text-based files
         const response = await drive.files.get(
           { fileId, alt: "media" },
           { responseType: "text" }
         );
-        return res.send(response.data);
+        const rawText = String(response.data || "");
+        if (returnChunks) {
+          const chunks = createSemanticChunks(rawText, 1200);
+          return res.json({
+            success: true,
+            fileName,
+            mimeType,
+            parserUsed: "plain_text_semantic_chunker",
+            chunks,
+            text: rawText
+          });
+        }
+        return res.send(rawText);
       }
     } catch (error: any) {
       console.error("[DriveProxy] Content error detail:", error.message);

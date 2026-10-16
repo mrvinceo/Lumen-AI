@@ -118,8 +118,14 @@ export const chatWithLumen = async (messages: any[], unit?: string, personaId?: 
         
         CITATION RULE: If a source in the context has a URL, you SHOULD include that URL in your response when citing that information, so the user can read more. Format citations like: "[Source Name](URL)".
         
+        CONCISENESS & SUCCINCTNESS GUIDELINE:
+        - Provide concise, succinct answers that directly address the user's question without unnecessary filler, repetitive preambles, or long-winded commentary.
+        - Summarize information cleanly while retaining all necessary detail, facts, policies, and practical steps.
+        - Structure information using short paragraphs, concise bullet points, or numbered steps so the student can grasp the answer quickly.
+        - When a persona is active, speak in that persona's distinctive voice while still keeping responses succinct, direct, and focused.
+        
         If you truly cannot find the information after searching, politely inform the user and suggest they contact student services.
-        Always maintain a professional yet creative and supportive tone.`,
+        Always maintain a professional yet creative, supportive, and concise tone.`,
         tools: [{ functionDeclarations: [searchKnowledgeBaseFunction] }],
       },
     })

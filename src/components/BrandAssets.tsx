@@ -60,75 +60,67 @@ const F_Bot = ({ className }: { className?: string }) => (
   <Bot className={className} strokeWidth={1.5} />
 );
 
-// --- The Animated Icon Component ---
-export const ChatAvatarIcon = ({ size = "base" }: { size?: "sm" | "base" | "lg" }) => {
-  const sequence = [
-    { Form: F_Circle, color: OCA_COLORS.cadmium },
-    { Form: F_CornerBites, color: OCA_COLORS.tintPink },
-    { Form: F_C, color: OCA_COLORS.scarlet },
-    { Form: F_Slant, color: OCA_COLORS.tintGreen },
-    { Form: F_Arch, color: OCA_COLORS.cerulean },
-    { Form: F_LeftBite, color: OCA_COLORS.tintYellow },
-    { Form: F_A, color: OCA_COLORS.verdigris },
-    { Form: F_Bot, color: OCA_COLORS.coreBlue },
-  ];
-
-  const sizeClasses = {
-    sm: "w-8 h-8 rounded-lg",
-    base: "w-10 h-10 rounded-xl",
-    lg: "w-14 h-14 rounded-2xl",
-  };
-
-  const iconClasses = {
-    sm: "w-5 h-5",
-    base: "w-6 h-6",
-    lg: "w-8 h-8",
-  };
-
+// --- The Custom SVG Avatar Icon ---
+export const LumenAvatarIcon = ({ 
+  className = "w-full h-full", 
+  isThinking = false 
+}: { 
+  className?: string; 
+  isThinking?: boolean;
+}) => {
   return (
-    <div className={`relative ${sizeClasses[size]} bg-white flex items-center justify-center shadow-sm overflow-hidden shrink-0`}>
+    <svg 
+      className={className}
+      viewBox="0 0 100 100" 
+      version="1.1" 
+      xmlns="http://www.w3.org/2000/svg" 
+      xmlnsXlink="http://www.w3.org/1999/xlink" 
+      xmlSpace="preserve" 
+      style={{
+        fillRule: "evenodd",
+        clipRule: "evenodd",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }}
+    >
       <style>{`
-        @keyframes chat_spin_strict_8 {
-          0% { 
-            opacity: 0; 
-            transform: rotate(-180deg) scale(0); 
-            animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
-          }
-          1.25% { 
-            opacity: 1; 
-            transform: rotate(0deg) scale(1); 
-          }
-          8.75% { 
-            opacity: 1; 
-            transform: rotate(0deg) scale(1); 
-            animation-timing-function: cubic-bezier(0.8, 0.2, 0.8, 1);
-          }
-          12.5% { 
-            opacity: 0; 
-            transform: rotate(180deg) scale(0); 
-          }
-          100% { 
-            opacity: 0; 
-            transform: rotate(180deg) scale(0); 
-          }
+        @keyframes lumen_thinking_pulse {
+          0%, 100% { transform: translateY(0) scale(1); }
+          50% { transform: translateY(-4px) scale(1.02); }
+        }
+        @keyframes lumen_antenna_wiggle {
+          0%, 100% { transform: rotate(0deg); }
+          50% { transform: rotate(8deg); }
         }
       `}</style>
-
-      {sequence.map((item, i) => (
-        <div 
-          key={i}
-          className="absolute inset-0 flex items-center justify-center" 
-          style={{ 
-            color: item.color,
-            opacity: 0, 
-            animation: `chat_spin_strict_8 8s infinite ${i}s` 
-          }}
-        >
-          <item.Form className={`${iconClasses[size]} drop-shadow-sm`} />
-        </div>
-      ))}
-    </div>
+      <g style={isThinking ? { transformOrigin: "50% 50%", animation: "lumen_thinking_pulse 1.5s infinite ease-in-out" } : undefined}>
+        {/* Antenna */}
+        <path 
+          d="M50,33.333l0,-16.667l-16.667,0" 
+          fill="none" 
+          fillRule="nonzero" 
+          stroke="#060645" 
+          strokeWidth="6.25"
+          style={isThinking ? { transformOrigin: "50% 33px", animation: "lumen_antenna_wiggle 1s infinite ease-in-out" } : undefined}
+        />
+        {/* Main Head/Body */}
+        <path d="M83.333,41.667l0,33.333c0,4.599 -3.734,8.333 -8.333,8.333l-50,0c-4.599,0 -8.333,-3.734 -8.333,-8.333l0,-33.333c0,-4.599 3.734,-8.333 8.333,-8.333l50,0c4.599,0 8.333,3.734 8.333,8.333Z" fill="#edc84e" stroke="#060645" strokeWidth="6.25" />
+        {/* Left Ear/Connector */}
+        <path d="M8.333,58.333l8.333,0" fill="none" fillRule="nonzero" stroke="#060645" strokeWidth="6.25" />
+        {/* Right Ear/Connector */}
+        <path d="M83.333,58.333l8.333,0" fill="none" fillRule="nonzero" stroke="#060645" strokeWidth="6.25" />
+        {/* Right Eye */}
+        <path d="M62.5,54.167l0,8.333" fill="none" fillRule="nonzero" stroke="#060645" strokeWidth="6.25" />
+        {/* Left Eye */}
+        <path d="M37.5,54.167l0,8.333" fill="none" fillRule="nonzero" stroke="#060645" strokeWidth="6.25" />
+      </g>
+    </svg>
   );
+};
+
+// --- Legacy wrapper for any direct uses of ChatAvatarIcon ---
+export const ChatAvatarIcon = ({ size = "base" }: { size?: "sm" | "base" | "lg" }) => {
+  return <BotAvatar isThinking={true} size={size} />;
 };
 
 // --- Bot Avatar Component ---
@@ -140,21 +132,17 @@ export const BotAvatar = ({ isThinking = false, size = "base", className = "" }:
   };
 
   const iconClasses = {
-    sm: "w-5 h-5",
-    base: "w-6 h-6",
-    lg: "w-8 h-8",
+    sm: "w-6 h-6",
+    base: "w-8 h-8",
+    lg: "w-11 h-11",
   };
-
-  if (isThinking) {
-    return <ChatAvatarIcon size={size} />;
-  }
 
   const defaultStyles = "bg-white shadow-sm border border-gray-100";
   const hasCustomStyles = className.includes('bg-') || className.includes('shadow-') || className.includes('border-');
 
   return (
     <div className={cn("relative flex items-center justify-center overflow-hidden shrink-0", sizeClasses[size], !hasCustomStyles && defaultStyles, className)}>
-      <Bot className={`${iconClasses[size]} text-oca-blue drop-shadow-sm`} strokeWidth={1.5} />
+      <LumenAvatarIcon className={`${iconClasses[size]} text-oca-blue`} isThinking={isThinking} />
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { FolderPlus, RefreshCw, Trash2, ExternalLink, CheckCircle, AlertCircle, Loader2, LogIn, ArrowLeft, Code, Copy, Palette, Plus, GraduationCap, Eye, X, Bot, ClipboardList, Activity, Check, Search, BookOpen, AlertTriangle, Pencil, FileText, Sparkles, Cpu, Layers, Table, Sliders } from "lucide-react";
+import { FolderPlus, RefreshCw, Trash2, ExternalLink, CheckCircle, AlertCircle, Loader2, LogIn, ArrowLeft, Code, Copy, Palette, Plus, GraduationCap, Eye, X, Bot, ClipboardList, Activity, Check, Search, BookOpen, AlertTriangle, Pencil, FileText, Sparkles, Cpu, Layers, Table, Sliders, Shield, Database } from "lucide-react";
 import { db, auth, handleFirestoreError, OperationType } from "../firebase";
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, serverTimestamp, query, orderBy, setDoc, where, writeBatch, vector, getDoc, onSnapshot } from "firebase/firestore";
 import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
@@ -17,6 +17,8 @@ interface Folder {
   unit?: string;
   persona?: string;
   citation?: boolean;
+  /** "staff" = staff desktop only; "all" = student-visible Lumen KB */
+  audience?: "staff" | "all";
 }
 
 interface FeedbackTheme {
@@ -163,6 +165,8 @@ export default function AdminPanel() {
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderUnit, setNewFolderUnit] = useState("");
   const [newFolderPersona, setNewFolderPersona] = useState("");
+  const [newFolderStaffOnly, setNewFolderStaffOnly] = useState(false);
+  const [isBackfillingAudience, setIsBackfillingAudience] = useState(false);
   const [newThemeName, setNewThemeName] = useState("");
   const [newThemePrompt, setNewThemePrompt] = useState("");
   const [editingTheme, setEditingTheme] = useState<FeedbackTheme | null>(null);
@@ -263,10 +267,19 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
     let unsubscribeStats: (() => void) | null = null;
     let unsubscribeDocAi: (() => void) | null = null;
 
-    const unsubscribeAuth = auth.onAuthStateChanged(user => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       setUser(user);
       setAuthChecked(true);
-      if (user && user.email?.toLowerCase() === "paulvincent@oca.ac.uk") {
+      let adminOk = false;
+      if (user) {
+        try {
+          const token = await user.getIdTokenResult();
+          adminOk = !!token.claims.admin || user.email?.toLowerCase() === "paulvincent@oca.ac.uk";
+        } catch {
+          adminOk = user.email?.toLowerCase() === "paulvincent@oca.ac.uk";
+        }
+      }
+      if (adminOk) {
         setIsAdmin(true);
         fetchFolders();
         fetchThemes();
@@ -597,6 +610,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
         name: newFolderName,
         unit: newFolderUnit || null,
         persona: newFolderPersona || null,
+        audience: newFolderStaffOnly ? "staff" : "all",
         status: "pending",
         createdAt: serverTimestamp(),
         citation: true,
@@ -605,11 +619,56 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
       setNewFolderName("");
       setNewFolderUnit("");
       setNewFolderPersona("");
+      setNewFolderStaffOnly(false);
       fetchFolders();
     } catch (error) {
       console.error("Error adding folder:", error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleToggleAudience = async (folder: Folder) => {
+    const nextAudience = folder.audience === "staff" ? "all" : "staff";
+    try {
+      await updateDoc(doc(db, "folders", folder.id), { audience: nextAudience });
+      showNotification(
+        nextAudience === "staff"
+          ? `"${folder.name}" marked Staff only. Re-index to update existing chunks.`
+          : `"${folder.name}" marked for all users. Re-index to update existing chunks.`,
+        "info"
+      );
+      fetchFolders();
+    } catch (error) {
+      console.error("Error updating audience:", error);
+      showNotification("Failed to update Staff tag", "error");
+    }
+  };
+
+  const handleBackfillAudience = async () => {
+    setIsBackfillingAudience(true);
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error("Not signed in");
+      const res = await fetch("/api/admin/backfill-audience", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Backfill failed");
+      showNotification(
+        `Backfill complete: ${data.foldersUpdated ?? 0} folders, ${data.chunksUpdated ?? 0} chunks set to audience=all.`,
+        "success"
+      );
+      fetchFolders();
+    } catch (error: any) {
+      console.error("Backfill error:", error);
+      showNotification(`Backfill failed: ${error.message || error}`, "error");
+    } finally {
+      setIsBackfillingAudience(false);
     }
   };
 
@@ -1003,6 +1062,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
           text: chunk.text,
           url: chunk.url,
           persona: null,
+          audience: "all",
           embedding: vector(chunk.embedding),
           indexedAt: serverTimestamp(),
         });
@@ -1293,6 +1353,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
               embedding: vector(chunk.embedding),
               unit: (folder as any).unit || null,
               persona: (folder as any).persona || null,
+              audience: folder.audience === "staff" ? "staff" : "all",
               indexedAt: serverTimestamp(),
             });
             count++;
@@ -1474,6 +1535,22 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                     ))}
                   </select>
                 </div>
+                <label className="flex items-start gap-3 p-4 rounded-xl border-2 border-gray-100 bg-gray-50 cursor-pointer hover:border-oca-blue/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={newFolderStaffOnly}
+                    onChange={(e) => setNewFolderStaffOnly(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-oca-blue focus:ring-oca-blue"
+                  />
+                  <span>
+                    <span className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-oca-blue">
+                      <Shield size={14} /> Staff only
+                    </span>
+                    <span className="block text-xs text-gray-500 mt-1 font-medium">
+                      Indexed content is available only in the staff desktop assistant — never in student Lumen chat.
+                    </span>
+                  </span>
+                </label>
                 <button 
                   onClick={handleAddFolder}
                   disabled={isLoading || !newFolderId || !newFolderName}
@@ -1487,6 +1564,17 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
 
           {/* Folder List */}
           <div className="lg:col-span-2 overflow-x-auto">
+            <div className="flex justify-end mb-3">
+              <button
+                onClick={handleBackfillAudience}
+                disabled={isBackfillingAudience || isLoading}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-widest text-oca-blue border-2 border-oca-blue rounded-xl hover:bg-oca-blue-tint disabled:opacity-50 transition-colors"
+                title="Set audience=all on folders/chunks missing the field (required before staff isolation filters)"
+              >
+                {isBackfillingAudience ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />}
+                Backfill audience=all
+              </button>
+            </div>
             <div className="bg-white rounded-2xl shadow-sm border border-gray-200 min-w-[700px]">
               <table className="w-full text-left">
                 <thead className="bg-gray-50 border-b border-gray-200">
@@ -1494,6 +1582,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700">Folder</th>
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700">Unit</th>
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700">Persona</th>
+                    <th className="px-6 py-4 text-sm font-semibold text-gray-700">Audience</th>
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700">Citation</th>
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700">Status</th>
                     <th className="px-6 py-4 text-sm font-semibold text-gray-700 min-w-[140px] text-right">Actions</th>
@@ -1502,7 +1591,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                 <tbody className="divide-y divide-gray-100">
                   {folders.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
+                      <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
                         No folders added yet. Add your first GDrive folder to start indexing.
                       </td>
                     </tr>
@@ -1510,7 +1599,14 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                   {folders.map((folder) => (
                     <tr key={folder.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4">
-                        <div className="font-medium text-gray-900">{folder.name}</div>
+                        <div className="font-medium text-gray-900 flex items-center gap-2">
+                          {folder.name}
+                          {folder.audience === "staff" && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-200">
+                              <Shield size={10} /> Staff
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-gray-400 font-mono truncate max-w-[150px]" title={folder.folderId}>{folder.folderId}</div>
                       </td>
                       <td className="px-6 py-4">
@@ -1518,6 +1614,22 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                       </td>
                       <td className="px-6 py-4">
                         <span className="text-sm font-bold text-oca-blue">{(folder as any).persona || "None"}</span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <button
+                          onClick={() => handleToggleAudience(folder)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                            folder.audience === "staff" ? "bg-amber-500" : "bg-gray-200"
+                          }`}
+                          title={folder.audience === "staff" ? "Staff only — click to make available to all (re-index required)" : "All users — click to mark Staff only (re-index required)"}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                              folder.audience === "staff" ? "translate-x-5" : "translate-x-0"
+                            }`}
+                          />
+                        </button>
                       </td>
                       <td className="px-6 py-4">
                         <button

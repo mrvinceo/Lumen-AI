@@ -10,7 +10,9 @@
         "indexedAt": { "type": "string", "format": "date-time", "description": "When the folder was last indexed." },
         "status": { "type": "string", "enum": ["pending", "indexing", "completed", "error"], "description": "The indexing status." },
         "unit": { "type": "string", "description": "Optional unit parameter to scope this folder." },
-        "persona": { "type": "string", "description": "Optional persona ID to scope this folder to a specific character." }
+        "persona": { "type": "string", "description": "Optional persona ID to scope this folder to a specific character." },
+        "audience": { "type": "string", "enum": ["all", "staff"], "description": "Who can retrieve this folder's content. 'staff' is excluded from student Lumen chat." },
+        "citation": { "type": "boolean", "description": "Whether citations from this folder are shown in the UI." }
       },
       "required": ["folderId", "name", "status"]
     },
@@ -25,9 +27,24 @@
         "text": { "type": "string", "description": "The text content of the chunk." },
         "embedding": { "type": "array", "description": "The vector embedding of the chunk." },
         "unit": { "type": "string", "description": "Optional unit parameter for scoping." },
-        "persona": { "type": "string", "description": "Optional persona ID for character-specific knowledge." }
+        "persona": { "type": "string", "description": "Optional persona ID for character-specific knowledge." },
+        "audience": { "type": "string", "enum": ["all", "staff"], "description": "Who can retrieve this chunk. 'staff' is excluded from student Lumen chat." }
       },
       "required": ["folderId", "fileId", "text", "embedding"]
+    },
+    "UserChunk": {
+      "title": "Personal User Chunk",
+      "description": "A privately indexed chunk from a staff user's uploaded file.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The Firebase Auth UID of the owning staff user." },
+        "fileName": { "type": "string", "description": "The name of the uploaded file." },
+        "fileId": { "type": "string", "description": "Client-generated file group id for delete-by-file." },
+        "text": { "type": "string", "description": "The text content of the chunk." },
+        "embedding": { "type": "array", "description": "The vector embedding of the chunk." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the chunk was indexed." }
+      },
+      "required": ["userId", "fileName", "text", "embedding"]
     },
     "ChatMessage": {
       "title": "Chat Message",

@@ -777,11 +777,13 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
         newDebugLog.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
       };
 
-      // Fetch GDrive folders with citations disabled
+      // Fetch GDrive folders with citations disabled (student-visible audience only —
+      // listing all folders would fail rules once staff folders exist)
       let disabledFolderIds: string[] = [];
       try {
-        const foldersRef = collection(db, "folders");
-        const foldersSnap = await getDocs(foldersRef);
+        const foldersSnap = await getDocs(
+          query(collection(db, "folders"), where("audience", "==", "all"))
+        );
         disabledFolderIds = foldersSnap.docs
           .map(doc => doc.data())
           .filter(data => data.citation === false && data.folderId)

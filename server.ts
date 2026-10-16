@@ -207,6 +207,23 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+  // Allow staff Electron app (file:// / localhost) to call Gemini + auth APIs
+  app.use("/api", (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    } else {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    }
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
@@ -851,6 +868,206 @@ async function startServer() {
     }
     res.clearCookie("lumen_uid", cookieOptions);
     res.json({ status: "success" });
+  });
+
+  // --- Staff desktop: Google SSO domain + Groups → custom claims ---
+
+  function getBootstrapAdminEmails(): string[] {
+    const raw = process.env.BOOTSTRAP_ADMIN_EMAILS || "paulvincent@oca.ac.uk";
+    return raw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+  }
+
+  function loadWorkspaceAuthClient() {
+    const adminEmail = process.env.GOOGLE_WORKSPACE_ADMIN_EMAIL;
+    if (!adminEmail) {
+      throw new Error("GOOGLE_WORKSPACE_ADMIN_EMAIL is not configured");
+    }
+
+    let credentials: any = null;
+    if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    } else if (process.env.GOOGLE_SERVICE_ACCOUNT_PATH) {
+      credentials = JSON.parse(fs.readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_PATH, "utf8"));
+    } else {
+      throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_PATH is required for Groups checks");
+    }
+
+    const auth = new google.auth.JWT({
+      email: credentials.client_email,
+      key: credentials.private_key,
+      scopes: ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"],
+      subject: adminEmail,
+    });
+    return auth;
+  }
+
+  async function isGroupMember(groupEmail: string, memberEmail: string): Promise<boolean> {
+    if (!groupEmail) return false;
+    try {
+      const auth = loadWorkspaceAuthClient();
+      const directory = google.admin({ version: "directory_v1", auth });
+      const res = await directory.members.hasMember({
+        groupKey: groupEmail,
+        memberKey: memberEmail,
+      });
+      return !!res.data?.isMember;
+    } catch (err: any) {
+      // 404 = not a member
+      if (err?.code === 404 || err?.response?.status === 404) return false;
+      console.warn(`Group membership check failed for ${memberEmail} in ${groupEmail}:`, err?.message || err);
+      return false;
+    }
+  }
+
+  async function resolveStaffClaims(email: string): Promise<{ staff: boolean; admin: boolean }> {
+    const normalized = email.toLowerCase();
+    const bootstrapAdmins = getBootstrapAdminEmails();
+    let admin = bootstrapAdmins.includes(normalized);
+    let staff = admin;
+
+    const staffGroup = process.env.STAFF_GROUP_EMAIL || "";
+    const adminGroup = process.env.ADMIN_GROUP_EMAIL || "";
+
+    if (staffGroup || adminGroup) {
+      try {
+        if (staffGroup && !staff) {
+          staff = await isGroupMember(staffGroup, normalized);
+        }
+        if (adminGroup && !admin) {
+          admin = await isGroupMember(adminGroup, normalized);
+          if (admin) staff = true;
+        }
+      } catch (err: any) {
+        console.warn("Groups resolution unavailable, falling back to bootstrap admins only:", err?.message || err);
+      }
+    }
+
+    // Dev / misconfig safety: if no groups configured, any @oca.ac.uk user is treated as staff
+    // (still blocked from admin unless bootstrap). Prefer configuring STAFF_GROUP_EMAIL in production.
+    if (!staffGroup && !admin && normalized.endsWith("@oca.ac.uk")) {
+      staff = true;
+    }
+
+    return { staff, admin };
+  }
+
+  function isRequestAdmin(decoded: admin.auth.DecodedIdToken): boolean {
+    const email = (decoded.email || "").toLowerCase();
+    return (
+      decoded.admin === true ||
+      getBootstrapAdminEmails().includes(email) ||
+      decoded.uid === "ZqpJke7dXaXj4aKsBdLycqIiXgK2"
+    );
+  }
+
+  /**
+   * POST /api/auth/staff-session
+   * Body: { idToken }
+   * Verifies Google SSO, enforces @oca.ac.uk, checks Groups, sets custom claims.
+   */
+  app.post("/api/auth/staff-session", async (req, res) => {
+    try {
+      const { idToken } = req.body;
+      if (!idToken) return res.status(400).json({ error: "Missing idToken" });
+
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      const email = (decoded.email || "").toLowerCase();
+      if (!email || !email.endsWith("@oca.ac.uk")) {
+        return res.status(403).json({ error: "Access restricted to @oca.ac.uk accounts" });
+      }
+
+      const claims = await resolveStaffClaims(email);
+      if (!claims.staff) {
+        return res.status(403).json({
+          error: "Your account is not in the staff allowlist. Contact IT if you need access.",
+        });
+      }
+
+      await admin.auth().setCustomUserClaims(decoded.uid, {
+        staff: claims.staff,
+        admin: claims.admin,
+      });
+
+      const customToken = await admin.auth().createCustomToken(decoded.uid, {
+        staff: claims.staff,
+        admin: claims.admin,
+        email,
+      });
+
+      res.json({
+        status: "success",
+        uid: decoded.uid,
+        email,
+        staff: claims.staff,
+        admin: claims.admin,
+        customToken,
+      });
+    } catch (error: any) {
+      console.error("Staff session error:", error);
+      res.status(401).json({ error: error.message || "Invalid token" });
+    }
+  });
+
+  /**
+   * POST /api/admin/backfill-audience
+   * Sets audience=all on folders/chunks missing the field (Admin SDK).
+   */
+  app.post("/api/admin/backfill-audience", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization || "";
+      const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : req.body?.idToken;
+      if (!idToken) return res.status(401).json({ error: "Missing Authorization bearer token" });
+
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      if (!isRequestAdmin(decoded)) {
+        return res.status(403).json({ error: "Admin only" });
+      }
+
+      const firestore = getFirestore(firebaseConfig.firestoreDatabaseId);
+      let foldersUpdated = 0;
+      let chunksUpdated = 0;
+
+      const foldersSnap = await firestore.collection("folders").get();
+      let batch = firestore.batch();
+      let ops = 0;
+      for (const docSnap of foldersSnap.docs) {
+        const data = docSnap.data();
+        if (data.audience !== "staff" && data.audience !== "all") {
+          batch.update(docSnap.ref, { audience: "all" });
+          foldersUpdated++;
+          ops++;
+          if (ops === 400) {
+            await batch.commit();
+            batch = firestore.batch();
+            ops = 0;
+          }
+        }
+      }
+      if (ops > 0) await batch.commit();
+
+      batch = firestore.batch();
+      ops = 0;
+      const chunksSnap = await firestore.collection("chunks").get();
+      for (const docSnap of chunksSnap.docs) {
+        const data = docSnap.data();
+        if (data.audience !== "staff" && data.audience !== "all") {
+          batch.update(docSnap.ref, { audience: "all" });
+          chunksUpdated++;
+          ops++;
+          if (ops === 400) {
+            await batch.commit();
+            batch = firestore.batch();
+            ops = 0;
+          }
+        }
+      }
+      if (ops > 0) await batch.commit();
+
+      res.json({ status: "success", foldersUpdated, chunksUpdated });
+    } catch (error: any) {
+      console.error("Backfill audience error:", error);
+      res.status(500).json({ error: error.message || "Backfill failed" });
+    }
   });
 
   // Rate Limiting Logic
@@ -1719,6 +1936,7 @@ async function startServer() {
           text: chunk.text,
           url: chunk.url || null,
           persona: null,
+          audience: "all",
           embedding: FieldValue.vector(chunk.embedding),
           indexedAt: FieldValue.serverTimestamp()
         });

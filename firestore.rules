@@ -16,27 +16,45 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.uid == 'ZqpJke7dXaXj4aKsBdLycqIiXgK2' ||
         ('email' in request.auth.token && request.auth.token.email == 'paulvincent@oca.ac.uk') ||
-        ('email' in request.auth.token && request.auth.token.email.matches('(?i)^paulvincent@oca\\.ac\\.uk$'))
+        ('email' in request.auth.token && request.auth.token.email.matches('(?i)^paulvincent@oca\\.ac\\.uk$')) ||
+        request.auth.token.admin == true
       );
+    }
+
+    function isStaff() {
+      return isSignedIn() && (request.auth.token.staff == true || isAdmin());
     }
 
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    // Non-staff (student) content: audience missing or "all"
+    function isPublicAudience() {
+      return !('audience' in resource.data) || resource.data.audience == 'all';
+    }
+
+    function isStaffAudience() {
+      return 'audience' in resource.data && resource.data.audience == 'staff';
+    }
+
+    function canReadAudienceDoc() {
+      return isSignedIn() && (
+        isAdmin() ||
+        (isStaffAudience() && isStaff()) ||
+        isPublicAudience()
+      );
+    }
+
     // --- Collections ---
 
     match /chat_history/{msgId} {
-      // Allow user to see their own messages
       allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      // Allow user to write their own messages
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      // Admins can see all history
       allow read: if isAdmin();
     }
 
     match /chat_sessions/{sessionId} {
-      // Allow user to see and write their own sessions
       allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
@@ -47,13 +65,22 @@ service cloud.firestore {
     }
 
     match /folders/{folderId} {
-      allow read: if isSignedIn();
+      allow read: if canReadAudienceDoc();
       allow write: if isAdmin();
     }
 
     match /chunks/{chunkId} {
-      allow read: if isSignedIn();
+      allow read: if canReadAudienceDoc();
       allow write: if isAdmin();
+    }
+
+    // Personal staff uploads — owner only
+    match /user_chunks/{chunkId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && isStaff();
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
 
     match /moodleUnits/{unitId} {
@@ -81,9 +108,7 @@ service cloud.firestore {
     }
 
     match /study_schedules/{scheduleId} {
-      // Allow user to read and delete their own schedules
       allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
-      // Allow user to create schedules signed as themselves
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
     }
 

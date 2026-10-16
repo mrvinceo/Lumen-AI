@@ -983,15 +983,13 @@ async function startServer() {
         });
       }
 
+      // Set claims on the existing Firebase user. The desktop client already signed in
+      // with Google — it only needs getIdToken(true) to pick these up.
+      // Do NOT call createCustomToken here: that requires iam.serviceAccounts.signBlob,
+      // which Cloud Run's runtime SA often lacks (same constraint as LTI custom tokens).
       await admin.auth().setCustomUserClaims(decoded.uid, {
         staff: claims.staff,
         admin: claims.admin,
-      });
-
-      const customToken = await admin.auth().createCustomToken(decoded.uid, {
-        staff: claims.staff,
-        admin: claims.admin,
-        email,
       });
 
       res.json({
@@ -1000,7 +998,6 @@ async function startServer() {
         email,
         staff: claims.staff,
         admin: claims.admin,
-        customToken,
       });
     } catch (error: any) {
       console.error("Staff session error:", error);

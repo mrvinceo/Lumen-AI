@@ -2042,6 +2042,20 @@ async function startServer() {
   });
 
   // GDrive API Proxy
+  function extractDriveFolderId(input: string): string {
+    if (!input || typeof input !== "string") return "";
+    const trimmed = input.trim();
+    const folderMatch = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (folderMatch) return folderMatch[1];
+    const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (idMatch) return idMatch[1];
+    const fileMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (fileMatch) return fileMatch[1];
+    const clean = trimmed.split(/[?#]/)[0].replace(/\/+$/, "");
+    const parts = clean.split("/");
+    return parts[parts.length - 1];
+  }
+
   app.post("/api/drive/list", async (req, res) => {
     const { tokens, folderId } = req.body;
     const token = tokens?.access_token;
@@ -2054,39 +2068,111 @@ async function startServer() {
     }
 
     try {
-      if (!folderId) {
-        throw new Error("Missing folderId in request");
+      const cleanFolderId = extractDriveFolderId(folderId);
+      if (!cleanFolderId) {
+        throw new Error("Missing or invalid folderId in request");
       }
 
-      // Using direct fetch for better debugging of auth headers
-      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folderId}' in parents and trashed = false`)}&fields=${encodeURIComponent("files(id, name, mimeType)")}`;
-      
-      const driveRes = await fetch(url, {
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
-      });
+      console.log(`[DriveProxy] Sanitized folder ID: "${cleanFolderId}" (raw: "${folderId}")`);
 
-      const data = await driveRes.json();
+      const allowedMimeTypes = [
+        "text/plain",
+        "application/pdf",
+        "application/vnd.google-apps.document",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ];
 
-      if (!driveRes.ok) {
-        console.error("[DriveProxy] Google Drive API Error:", JSON.stringify(data));
-        return res.status(driveRes.status).json({
-          error: "Google Drive API returned an error",
-          details: data.error?.message || JSON.stringify(data),
-          code: data.error?.code,
-          status: driveRes.status
-        });
+      // Recursive crawler to fetch files across folder and any subfolders (with Shared Drive support)
+      async function crawlDriveFolder(targetId: string, pathPrefix = "", depth = 0, visited = new Set<string>()): Promise<any[]> {
+        if (depth > 5 || visited.has(targetId)) return [];
+        visited.add(targetId);
+
+        let discoveredFiles: any[] = [];
+        let pageToken: string | undefined = undefined;
+
+        do {
+          const params = new URLSearchParams({
+            q: `'${targetId}' in parents and trashed = false`,
+            fields: "nextPageToken, files(id, name, mimeType, size, shortcutDetails)",
+            supportsAllDrives: "true",
+            includeItemsFromAllDrives: "true",
+            corpora: "allDrives",
+            pageSize: "1000",
+          });
+          if (pageToken) {
+            params.set("pageToken", pageToken);
+          }
+
+          const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
+          const driveRes = await fetch(url, {
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          });
+
+          const data = await driveRes.json();
+          if (!driveRes.ok) {
+            console.error(`[DriveProxy] Google Drive API Error at depth ${depth} for folder ${targetId}:`, JSON.stringify(data));
+            if (depth === 0) {
+              const msg = data.error?.message || "Google Drive API error";
+              const code = data.error?.code || driveRes.status;
+              let hint = "";
+              if (code === 404) {
+                hint = " Folder was not found or the connected account lacks permissions. For Shared Drives, ensure your connected account is added as a Member or Viewer.";
+              }
+              const err: any = new Error(`${msg}.${hint}`);
+              err.status = driveRes.status;
+              err.code = code;
+              throw err;
+            }
+            break;
+          }
+
+          const items: any[] = data.files || [];
+          for (const item of items) {
+            let effectiveMime = item.mimeType;
+            let effectiveId = item.id;
+            let effectiveName = item.name;
+
+            // Resolve shortcuts
+            if (item.mimeType === "application/vnd.google-apps.shortcut" && item.shortcutDetails) {
+              effectiveMime = item.shortcutDetails.targetMimeType || item.mimeType;
+              effectiveId = item.shortcutDetails.targetId || item.id;
+            }
+
+            if (effectiveMime === "application/vnd.google-apps.folder") {
+              const subFiles = await crawlDriveFolder(
+                effectiveId, 
+                `${pathPrefix}${effectiveName} / `, 
+                depth + 1, 
+                visited
+              );
+              discoveredFiles = discoveredFiles.concat(subFiles);
+            } else if (allowedMimeTypes.includes(effectiveMime)) {
+              discoveredFiles.push({
+                id: effectiveId,
+                name: pathPrefix ? `${pathPrefix}${effectiveName}` : effectiveName,
+                mimeType: effectiveMime,
+                size: item.size
+              });
+            }
+          }
+
+          pageToken = data.nextPageToken;
+        } while (pageToken && discoveredFiles.length < 1000);
+
+        return discoveredFiles;
       }
 
-      console.log(`[DriveProxy] Successfully listed ${data.files?.length || 0} files`);
-      res.json(data.files);
+      const allFiles = await crawlDriveFolder(cleanFolderId);
+      console.log(`[DriveProxy] Successfully discovered ${allFiles.length} files across folder tree`);
+      res.json(allFiles);
     } catch (error: any) {
       console.error("[DriveProxy] Drive list error:", error.message);
-      res.status(500).json({ 
+      res.status(error.status || 500).json({ 
         error: "Failed to list files", 
         details: error.message,
-        stack: error.stack
+        code: error.code
       });
     }
   });
@@ -2179,21 +2265,35 @@ async function startServer() {
       return res.status(400).json({ error: "Missing access token" });
     }
 
+    const cleanFileId = extractDriveFolderId(fileId);
+
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: token });
     const drive = google.drive({ version: "v3", auth });
     try {
-      // 1. Get file metadata to check MIME type
-      const metadata = await drive.files.get({ fileId, fields: "name, mimeType" });
-      const mimeType = metadata.data.mimeType;
-      const fileName = metadata.data.name;
+      // 1. Get file metadata to check MIME type with supportsAllDrives: true
+      const metadata = await drive.files.get({ 
+        fileId: cleanFileId, 
+        fields: "id, name, mimeType, shortcutDetails",
+        supportsAllDrives: true 
+      });
 
-      console.log(`Fetching content for file: ${fileName} (${mimeType})`);
+      let mimeType = metadata.data.mimeType || "";
+      let fileName = metadata.data.name || "Untitled";
+      let targetFileId = cleanFileId;
+
+      // Handle shortcuts
+      if (mimeType === "application/vnd.google-apps.shortcut" && metadata.data.shortcutDetails) {
+        targetFileId = metadata.data.shortcutDetails.targetId || targetFileId;
+        mimeType = metadata.data.shortcutDetails.targetMimeType || mimeType;
+      }
+
+      console.log(`Fetching content for file: ${fileName} (${mimeType}, target ID: ${targetFileId})`);
 
       if (mimeType === "application/vnd.google-apps.document") {
         // Google Doc - Export as plain text
         const response = await drive.files.export({
-          fileId,
+          fileId: targetFileId,
           mimeType: "text/plain",
         });
         const docText = String(response.data || "");
@@ -2210,9 +2310,9 @@ async function startServer() {
         }
         return res.send(docText);
       } else if (mimeType === "application/pdf") {
-        // High-fidelity Layout Parsing (Document AI with Gemini layout understanding fallback)
+        // High-fidelity Layout Parsing with supportsAllDrives: true
         const driveResponse = await drive.files.get(
-          { fileId, alt: "media" },
+          { fileId: targetFileId, alt: "media", supportsAllDrives: true },
           { responseType: "arraybuffer" }
         );
         
@@ -2248,9 +2348,9 @@ async function startServer() {
           return;
         }
       } else if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-        // docx - Download and parse
+        // docx - Download and parse with supportsAllDrives: true
         const response = await drive.files.get(
-          { fileId, alt: "media" },
+          { fileId: targetFileId, alt: "media", supportsAllDrives: true },
           { responseType: "arraybuffer" }
         );
         const data = await mammoth.extractRawText({ buffer: Buffer.from(response.data as ArrayBuffer) });
@@ -2268,9 +2368,9 @@ async function startServer() {
         }
         return res.send(docxText);
       } else {
-        // Fallback for other text-based files
+        // Fallback for other text-based files with supportsAllDrives: true
         const response = await drive.files.get(
-          { fileId, alt: "media" },
+          { fileId: targetFileId, alt: "media", supportsAllDrives: true },
           { responseType: "text" }
         );
         const rawText = String(response.data || "");

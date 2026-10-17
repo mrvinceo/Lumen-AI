@@ -19,6 +19,21 @@ interface Folder {
   citation?: boolean;
   /** "staff" = staff desktop only; "all" = student-visible Lumen KB */
   audience?: "staff" | "all";
+  errorDetail?: string;
+}
+
+export function extractDriveFolderId(input: string): string {
+  if (!input || typeof input !== "string") return "";
+  const trimmed = input.trim();
+  const folderMatch = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch) return folderMatch[1];
+  const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch) return idMatch[1];
+  const fileMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch) return fileMatch[1];
+  const clean = trimmed.split(/[?#]/)[0].replace(/\/+$/, "");
+  const parts = clean.split("/");
+  return parts[parts.length - 1];
 }
 
 interface FeedbackTheme {
@@ -273,7 +288,15 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
       let adminOk = false;
       if (user) {
         try {
-          const token = await user.getIdTokenResult();
+          // Sync staff and admin claims with backend
+          const rawToken = await user.getIdToken();
+          await fetch("/api/auth/staff-session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken: rawToken }),
+          }).catch((e) => console.warn("Staff claims sync failed:", e));
+
+          const token = await user.getIdTokenResult(true);
           adminOk = !!token.claims.admin || user.email?.toLowerCase() === "paulvincent@oca.ac.uk";
         } catch {
           adminOk = user.email?.toLowerCase() === "paulvincent@oca.ac.uk";
@@ -602,12 +625,16 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
   };
 
   const handleAddFolder = async () => {
-    if (!newFolderId || !newFolderName) return;
+    const cleanId = extractDriveFolderId(newFolderId);
+    if (!cleanId || !newFolderName.trim()) {
+      showNotification("Please provide a valid folder ID or URL and folder name.", "error");
+      return;
+    }
     setIsLoading(true);
     try {
       await addDoc(collection(db, "folders"), {
-        folderId: newFolderId,
-        name: newFolderName,
+        folderId: cleanId,
+        name: newFolderName.trim(),
         unit: newFolderUnit || null,
         persona: newFolderPersona || null,
         audience: newFolderStaffOnly ? "staff" : "all",
@@ -621,8 +648,10 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
       setNewFolderPersona("");
       setNewFolderStaffOnly(false);
       fetchFolders();
-    } catch (error) {
+      showNotification(`Added "${newFolderName.trim()}" to folder list. Click 'Index Folder' to index.`, "success");
+    } catch (error: any) {
       console.error("Error adding folder:", error);
+      showNotification("Failed to add folder: " + (error.message || error), "error");
     } finally {
       setIsLoading(false);
     }
@@ -893,19 +922,21 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
     setTimeout(() => setNotification(null), 5000);
   };
 
-  const handleViewChunks = async (unitCode: string | null, personaId?: string | null) => {
+  const handleViewChunks = async (unitCode: string | null, personaId?: string | null, folderId?: string | null) => {
     setIsLoading(true);
-    setViewingUnitCode(unitCode || personaId || "Global");
+    setViewingUnitCode(unitCode || personaId || (folderId ? `Folder: ${folderId}` : "Global"));
     try {
       let q;
-      if (personaId) {
+      if (folderId) {
+        q = query(collection(db, "chunks"), where("folderId", "==", folderId));
+      } else if (personaId) {
         q = query(collection(db, "chunks"), where("persona", "==", personaId));
       } else {
         q = query(collection(db, "chunks"), where("unit", "==", unitCode));
       }
       const snapshot = await getDocs(q);
       let docs = snapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) }));
-      if (!personaId) {
+      if (!personaId && !folderId) {
         // Filter out chunk documents that are assigned specifically to a persona
         docs = docs.filter(chunk => !chunk.persona);
       }
@@ -1201,46 +1232,60 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
 
   const handleIndexFolder = async (folder: Folder) => {
     if (!tokens) {
-      showNotification("Please connect to Google Drive first.", "info");
+      showNotification("Please connect to Google Drive first using 'Connect Drive'.", "info");
+      return;
+    }
+
+    const cleanFolderId = extractDriveFolderId(folder.folderId);
+    if (!cleanFolderId) {
+      showNotification(`Invalid folder ID or URL for "${folder.name}".`, "error");
       return;
     }
 
     setIsLoading(true);
-    await updateDoc(doc(db, "folders", folder.id), { status: "indexing" });
+    // Persist cleaned folderId if stored with URL or trailing slashes
+    if (cleanFolderId !== folder.folderId) {
+      await updateDoc(doc(db, "folders", folder.id), { folderId: cleanFolderId, status: "indexing" });
+    } else {
+      await updateDoc(doc(db, "folders", folder.id), { status: "indexing" });
+    }
     fetchFolders();
     showNotification(`Starting indexing for "${folder.name}". Please keep this tab open until complete...`, "info");
 
     try {
-      console.log("Indexing folder:", folder.folderId, "with tokens:", tokens ? "Present" : "Missing");
+      console.log("Indexing folder:", cleanFolderId, "with tokens:", tokens ? "Present" : "Missing");
 
       // 0. Purge any outdated chunks for this folder to prevent duplication
       try {
-        const oldChunksQuery = query(collection(db, "chunks"), where("folderId", "==", folder.folderId));
-        const oldChunksSnap = await getDocs(oldChunksQuery);
-        if (!oldChunksSnap.empty) {
-          let purgeBatch = writeBatch(db);
-          let purgeCount = 0;
-          for (const docSnap of oldChunksSnap.docs) {
-            purgeBatch.delete(docSnap.ref);
-            purgeCount++;
-            if (purgeCount === 500) {
-              await purgeBatch.commit();
-              purgeBatch = writeBatch(db);
-              purgeCount = 0;
+        const idsToPurge = Array.from(new Set([cleanFolderId, folder.folderId]));
+        for (const fId of idsToPurge) {
+          const oldChunksQuery = query(collection(db, "chunks"), where("folderId", "==", fId));
+          const oldChunksSnap = await getDocs(oldChunksQuery);
+          if (!oldChunksSnap.empty) {
+            let purgeBatch = writeBatch(db);
+            let purgeCount = 0;
+            for (const docSnap of oldChunksSnap.docs) {
+              purgeBatch.delete(docSnap.ref);
+              purgeCount++;
+              if (purgeCount === 500) {
+                await purgeBatch.commit();
+                purgeBatch = writeBatch(db);
+                purgeCount = 0;
+              }
             }
+            if (purgeCount > 0) await purgeBatch.commit();
+            console.log(`[IndexFolder] Purged ${oldChunksSnap.size} outdated chunks for folder ${folder.name} (id: ${fId})`);
           }
-          if (purgeCount > 0) await purgeBatch.commit();
-          console.log(`[IndexFolder] Purged ${oldChunksSnap.size} outdated chunks for folder ${folder.name}`);
         }
       } catch (purgeErr) {
         console.warn("[IndexFolder] Could not purge old chunks:", purgeErr);
       }
 
-      // 1. List files in Google Drive folder
+      // 1. List files in Google Drive folder (with Shared Drive & subfolder crawler)
       const listRes = await fetch("/api/drive/list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tokens, folderId: folder.folderId }),
+        body: JSON.stringify({ tokens, folderId: cleanFolderId }),
       });
       
       const listData = await listRes.json();
@@ -1267,6 +1312,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
       if (eligibleFiles.length === 0) {
         await updateDoc(doc(db, "folders", folder.id), { 
           status: "completed", 
+          errorDetail: null,
           indexedAt: serverTimestamp() 
         });
         showNotification(`No supported documents found in "${folder.name}". Marked as completed.`, "info");
@@ -1274,6 +1320,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
       }
 
       let totalChunksIndexed = 0;
+      let failedFilesCount = 0;
 
       for (let fileIdx = 0; fileIdx < eligibleFiles.length; fileIdx++) {
         const file = eligibleFiles[fileIdx];
@@ -1287,6 +1334,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
           });
           
           if (!contentRes.ok) {
+            failedFilesCount++;
             const errorData = await contentRes.json().catch(() => ({}));
             console.error(`Failed to get content for ${file.name}:`, errorData);
             continue;
@@ -1345,7 +1393,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
           for (const chunk of chunksWithEmbeddings) {
             const newDocRef = doc(collection(db, "chunks"));
             batch.set(newDocRef, {
-              folderId: (folder as any).folderId,
+              folderId: cleanFolderId,
               fileId: file.id,
               fileName: file.name,
               text: chunk.text,
@@ -1367,19 +1415,29 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
           }
           if (count > 0) await batch.commit();
         } catch (e) {
+          failedFilesCount++;
           console.error(`Error processing file ${file.name}:`, e);
         }
       }
 
+      if (totalChunksIndexed === 0 && eligibleFiles.length > 0) {
+        throw new Error(`All ${eligibleFiles.length} file(s) failed extraction or embedding. Please check your connected Google Drive permissions.`);
+      }
+
       await updateDoc(doc(db, "folders", folder.id), { 
         status: "completed", 
+        errorDetail: null,
         indexedAt: serverTimestamp() 
       });
-      showNotification(`Successfully indexed "${folder.name}" (${totalChunksIndexed} chunks)!`, "success");
+      showNotification(`Successfully indexed "${folder.name}" (${totalChunksIndexed} chunks)!${failedFilesCount > 0 ? ` (${failedFilesCount} files had issues)` : ""}`, "success");
     } catch (error: any) {
       console.error("Indexing error:", error);
-      await updateDoc(doc(db, "folders", folder.id), { status: "error" });
-      showNotification(`Indexing failed for "${folder.name}": ${error.message || error}`, "error");
+      const errMsg = error.message || String(error);
+      await updateDoc(doc(db, "folders", folder.id), { 
+        status: "error",
+        errorDetail: errMsg,
+      });
+      showNotification(`Indexing failed for "${folder.name}": ${errMsg}`, "error");
     } finally {
       setIsLoading(false);
       fetchFolders();
@@ -1650,6 +1708,14 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <StatusBadge status={folder.status} />
+                          {folder.status === "error" && folder.errorDetail && (
+                            <span 
+                              title={folder.errorDetail}
+                              className="inline-flex items-center text-red-500 hover:text-red-700 cursor-help transition-colors"
+                            >
+                              <AlertCircle size={15} />
+                            </span>
+                          )}
                           {folder.indexedAt && (
                             <span className="text-[10px] text-gray-400">
                               {new Date(folder.indexedAt.seconds * 1000).toLocaleDateString()}
@@ -1660,7 +1726,7 @@ When increasing shutter speed by one full stop (e.g., 1/125s to 1/250s), the pho
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center justify-end gap-2">
                           <button 
-                            onClick={() => handleViewChunks(folder.unit || null, (folder as any).persona || null)}
+                            onClick={() => handleViewChunks(folder.unit || null, (folder as any).persona || null, folder.folderId)}
                             title="View Chunks"
                             className="p-2 text-oca-blue hover:bg-oca-blue-tint rounded-lg transition-colors border border-transparent hover:border-oca-blue"
                           >

@@ -13,6 +13,7 @@ Student Lumen (`searchChunks`):
 Staff desktop (`searchStaffChunks`):
 
 - `audience == "staff"` + vector on `embedding`
+- `audience == "all"` + `unit == null` + `persona == null` + vector on `embedding` (general KB only; no unit/persona content)
 
 Personal uploads (`searchUserChunks`):
 

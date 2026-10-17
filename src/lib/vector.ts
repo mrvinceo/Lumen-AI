@@ -156,20 +156,31 @@ export const searchChunks = async (
 };
 
 /**
- * Staff desktop search — only audience == "staff".
+ * Staff desktop search:
+ * - staff-tagged chunks (audience == "staff")
+ * - general college KB (audience == "all" + unit/persona null)
+ * Excludes unit-specific and persona-specific student content.
+ * Student Lumen still never sees audience == "staff".
  */
 export const searchStaffChunks = async (queryText: string, limit: number = 8) => {
-  console.log(`Staff search for query: "${queryText}"`);
+  console.log(`Staff search for query: "${queryText}" (staff + general global)`);
   const embedding = await getEmbeddings(queryText);
 
   try {
-    const staffResults = await runNearestSearch(
-      embedding,
-      limit,
-      [{ field: "audience", value: "staff" }],
-      "staff"
-    );
-    return mergeAndRank(staffResults, limit);
+    const [staffResults, generalResults] = await Promise.all([
+      runNearestSearch(embedding, limit, [{ field: "audience", value: "staff" }], "staff"),
+      runNearestSearch(
+        embedding,
+        limit,
+        [
+          { field: "audience", value: "all" },
+          { field: "unit", value: null },
+          { field: "persona", value: null },
+        ],
+        "general-global"
+      ),
+    ]);
+    return mergeAndRank([...staffResults, ...generalResults], limit);
   } catch (error) {
     console.warn("Staff vector search failed:", error);
     return [];

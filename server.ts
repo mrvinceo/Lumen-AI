@@ -877,6 +877,10 @@ async function startServer() {
     return raw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
   }
 
+  type GroupCheckResult =
+    | { ok: true; isMember: boolean }
+    | { ok: false; reason: string; status?: number };
+
   function loadWorkspaceAuthClient() {
     const adminEmail = process.env.GOOGLE_WORKSPACE_ADMIN_EMAIL;
     if (!adminEmail) {
@@ -892,17 +896,26 @@ async function startServer() {
       throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_PATH is required for Groups checks");
     }
 
+    // Cloud Run / YAML often stores private_key with literal \n sequences.
+    const privateKey = String(credentials.private_key || "").replace(/\\n/g, "\n");
+    if (!credentials.client_email || !privateKey.includes("BEGIN")) {
+      throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is missing client_email or a valid private_key");
+    }
+
     const auth = new google.auth.JWT({
       email: credentials.client_email,
-      key: credentials.private_key,
+      key: privateKey,
       scopes: ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"],
       subject: adminEmail,
     });
     return auth;
   }
 
-  async function isGroupMember(groupEmail: string, memberEmail: string): Promise<boolean> {
-    if (!groupEmail) return false;
+  async function checkGroupMembership(
+    groupEmail: string,
+    memberEmail: string
+  ): Promise<GroupCheckResult> {
+    if (!groupEmail) return { ok: true, isMember: false };
     try {
       const auth = loadWorkspaceAuthClient();
       const directory = google.admin({ version: "directory_v1", auth });
@@ -910,20 +923,33 @@ async function startServer() {
         groupKey: groupEmail,
         memberKey: memberEmail,
       });
-      return !!res.data?.isMember;
+      return { ok: true, isMember: !!res.data?.isMember };
     } catch (err: any) {
-      // 404 = not a member
-      if (err?.code === 404 || err?.response?.status === 404) return false;
-      console.warn(`Group membership check failed for ${memberEmail} in ${groupEmail}:`, err?.message || err);
-      return false;
+      const status = err?.code || err?.response?.status;
+      // Directory API historically returned 404 when the user is not a member.
+      if (status === 404) return { ok: true, isMember: false };
+
+      const reason =
+        err?.errors?.[0]?.message ||
+        err?.response?.data?.error?.message ||
+        err?.message ||
+        String(err);
+      console.warn(
+        `Group membership check failed for ${memberEmail} in ${groupEmail}:`,
+        { status, reason }
+      );
+      return { ok: false, reason, status: typeof status === "number" ? status : undefined };
     }
   }
 
-  async function resolveStaffClaims(email: string): Promise<{ staff: boolean; admin: boolean }> {
+  async function resolveStaffClaims(
+    email: string
+  ): Promise<{ staff: boolean; admin: boolean; groupCheckError?: string }> {
     const normalized = email.toLowerCase();
     const bootstrapAdmins = getBootstrapAdminEmails();
     let admin = bootstrapAdmins.includes(normalized);
     let staff = admin;
+    let groupCheckError: string | undefined;
 
     const staffGroup = process.env.STAFF_GROUP_EMAIL || "";
     const adminGroup = process.env.ADMIN_GROUP_EMAIL || "";
@@ -931,14 +957,27 @@ async function startServer() {
     if (staffGroup || adminGroup) {
       try {
         if (staffGroup && !staff) {
-          staff = await isGroupMember(staffGroup, normalized);
+          const result = await checkGroupMembership(staffGroup, normalized);
+          if (!result.ok) {
+            groupCheckError = `Staff group check failed (${staffGroup}): ${result.reason}`;
+          } else {
+            staff = result.isMember;
+          }
         }
         if (adminGroup && !admin) {
-          admin = await isGroupMember(adminGroup, normalized);
-          if (admin) staff = true;
+          const result = await checkGroupMembership(adminGroup, normalized);
+          if (!result.ok) {
+            groupCheckError =
+              (groupCheckError ? groupCheckError + "; " : "") +
+              `Admin group check failed (${adminGroup}): ${result.reason}`;
+          } else if (result.isMember) {
+            admin = true;
+            staff = true;
+          }
         }
       } catch (err: any) {
-        console.warn("Groups resolution unavailable, falling back to bootstrap admins only:", err?.message || err);
+        groupCheckError = err?.message || String(err);
+        console.warn("Groups resolution unavailable:", groupCheckError);
       }
     }
 
@@ -948,7 +987,7 @@ async function startServer() {
       staff = true;
     }
 
-    return { staff, admin };
+    return { staff, admin, groupCheckError };
   }
 
   function isRequestAdmin(decoded: admin.auth.DecodedIdToken): boolean {
@@ -977,6 +1016,23 @@ async function startServer() {
       }
 
       const claims = await resolveStaffClaims(email);
+      if (claims.groupCheckError) {
+        console.error("Staff session group infrastructure error:", {
+          email,
+          error: claims.groupCheckError,
+          hasWorkspaceAdmin: !!process.env.GOOGLE_WORKSPACE_ADMIN_EMAIL,
+          hasServiceAccountJson: !!process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+          hasServiceAccountPath: !!process.env.GOOGLE_SERVICE_ACCOUNT_PATH,
+          staffGroup: process.env.STAFF_GROUP_EMAIL || "",
+        });
+        return res.status(503).json({
+          error:
+            "Staff group membership could not be verified (Directory API / service account). " +
+            "This is a server configuration issue, not a missing group membership. " +
+            "Check GOOGLE_WORKSPACE_ADMIN_EMAIL, GOOGLE_SERVICE_ACCOUNT_JSON, and domain-wide delegation.",
+          detail: claims.groupCheckError,
+        });
+      }
       if (!claims.staff) {
         return res.status(403).json({
           error: "Your account is not in the staff allowlist. Contact IT if you need access.",

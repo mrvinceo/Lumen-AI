@@ -878,7 +878,7 @@ async function startServer() {
   }
 
   type GroupCheckResult =
-    | { ok: true; isMember: boolean }
+    | { ok: true; isMember: boolean; reason?: string }
     | { ok: false; reason: string; status?: number };
 
   function loadWorkspaceAuthClient() {
@@ -1285,6 +1285,7 @@ async function startServer() {
           - Deliver all responses, answers, insights, and guidance in a concise and succinct manner.
           - Summarize thoughts, advice, and facts directly with sufficient depth and clarity, without unnecessary filler or rambling.
           - Stay completely true to your persona's distinctive personality, tone, and perspective while keeping replies focused and digestible.
+          - When citing knowledge base context, use simple numbered markers like [1] or [Source 1]; never embed verbose file names or URLs directly inside body text citations.
 
           # FINAL COMMAND:
           Never refer to yourself as an AI or mention that you are "Based on" a persona. You ARE the persona described in the CORE IDENTITY. Use 'I', 'me', 'my', do NOT refer to yourself in the third person.

@@ -10,6 +10,7 @@ import { BotAvatar } from "./BrandAssets";
 import { jsPDF } from "jspdf";
 import { getCachedFile, getMsgTimeKey } from "../lib/mediaCache";
 import MediaCarousel from "./MediaCarousel";
+import { CitationDot, SourcesFooter, preprocessCitationMarkdown } from "./CitationComponents";
 
 interface HistoryMessage {
   id: string;
@@ -809,7 +810,7 @@ export default function HistoryView() {
                               <BotAvatar size="sm" isThinking={false} />
                             )}
                           </div>
-                          <div className={`max-w-[85%] p-6 rounded-3xl ${
+                          <div className={`chat-message-bubble max-w-[85%] p-6 rounded-3xl ${
                             msg.role === "user" 
                               ? "bg-oca-blue text-white rounded-tr-none shadow-xl" 
                               : "bg-gray-50 text-gray-800 rounded-tl-none border border-gray-100"
@@ -817,10 +818,18 @@ export default function HistoryView() {
                             <div className={`prose prose-sm max-w-none ${msg.role === "user" ? "prose-invert" : ""}`}>
                               <ReactMarkdown
                                 components={{
-                                  a: ({ node, ...props }) => <a target="_blank" rel="noopener noreferrer" {...props} />
+                                  a: ({ node, href, children, ...props }) => {
+                                    if (href && href.startsWith("#cite-")) {
+                                      const num = parseInt(href.replace("#cite-", ""), 10);
+                                      const source = msg.sources && msg.sources[num - 1];
+                                      return <CitationDot number={num} source={source} inline={true} />;
+                                    }
+                                    return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+                                  }
                                 }}
-                              >{msg.parts[0].text}</ReactMarkdown>
+                              >{preprocessCitationMarkdown(msg.parts[0]?.text || "", msg.sources)}</ReactMarkdown>
                             </div>
+                            <SourcesFooter sources={msg.sources} />
                             <MessageFilesAndCarousel msg={msg} previousMsg={idx > 0 ? arr[idx - 1] : undefined} />
                             <div className={`mt-3 text-[10px] font-bold uppercase tracking-widest opacity-40 ${msg.role === "user" ? "text-right" : ""}`}>
                               {msg.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

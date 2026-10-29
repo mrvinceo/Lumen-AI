@@ -116,7 +116,10 @@ export const chatWithLumen = async (messages: any[], unit?: string, personaId?: 
         
         ${unit ? `You are currently assisting a student in the course unit: ${unit}. Always prioritize information related to this unit.` : ""}
         
-        CITATION RULE: If a source in the context has a URL, you SHOULD include that URL in your response when citing that information, so the user can read more. Format citations like: "[Source Name](URL)".
+        CITATION RULE:
+        - When referencing or relying on information from the knowledge base, cite your sources using simple numbered markers: "[1]", "[2]" or "[Source 1]", "[Source 2]".
+        - CRITICAL: Never write out the document's file name or link inside your text citations (e.g. DO NOT write "([Source 2](Expenses Policy - August 2026.pdf))" or "(Expenses Policy.pdf)"). 
+        - Only output the source number in brackets, for example: "[1]" or "[Source 1]". The user interface automatically replaces these numbers with clean numbered circular badges and lists each source document once at the bottom.
         
         CONCISENESS & SUCCINCTNESS GUIDELINE:
         - Provide concise, succinct answers that directly address the user's question without unnecessary filler, repetitive preambles, or long-winded commentary.

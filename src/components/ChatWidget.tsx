@@ -14,6 +14,7 @@ import { BotAvatar, OCALogoCircle } from "./BrandAssets";
 import { LogIn, LogOut } from "lucide-react";
 import { saveCachedFile, getCachedFile, getMsgTimeKey } from "../lib/mediaCache";
 import MediaCarousel from "./MediaCarousel";
+import { CitationDot, SourcesFooter, preprocessCitationMarkdown } from "./CitationComponents";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -811,8 +812,8 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
               // Hide sources from folders where citation is disabled
               retrievedSources = results.filter(r => !r.folderId || !disabledFolderIds.includes(r.folderId));
               addLog(`Found ${results.length} relevant persona context chunks (${retrievedSources.length} cited)`);
-              const context = results.map(r => `Source: ${r.fileName}\nContent: ${r.text}`).join("\n\n");
-              contextFromKnowledgeBase = `\n\nKNOWLEDGE BASE CONTEXT FOR CRITIQUE:\n${context}`;
+              const context = results.map((r, idx) => `[Source ${idx + 1}] Document: ${r.fileName}\nContent: ${r.text}`).join("\n\n");
+              contextFromKnowledgeBase = `\n\nKNOWLEDGE BASE CONTEXT FOR CRITIQUE:\n${context}\n\nWhen citing sources, use simple numbered markers like [1] without embedding the file names.`;
             }
           } catch (err) {
             console.error("Failed to perform background search for multimodal context:", err);
@@ -853,13 +854,16 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
               
               let contextMessage = "";
               if (results.length > 0) {
-                const context = results.map(r => `Source: ${r.fileName}${r.url ? ` (URL: ${r.url})` : ""}\nContent: ${r.text}`).join("\n\n");
+                const context = results.map((r, idx) => `[Source ${idx + 1}] Document: ${r.fileName}${r.url ? ` (URL: ${r.url})` : ""}\nContent: ${r.text}`).join("\n\n");
                 contextMessage = `I have found the following information in the OCA knowledge base for you:
                 
 ${context}
 
 Using ONLY the information above, please provide a concise, succinct, and accurate answer to my question: "${input}". 
 Summarize the key points clearly with sufficient detail to answer the question, avoiding unnecessary verbosity or filler.
+CITATION INSTRUCTIONS:
+- When citing sources, use simple bracketed citation numbers only, such as "[1]" or "[Source 1]".
+- CRITICAL: Do NOT write out the source's file name, document title, or URL in the body of your response text (e.g. do NOT write "([Source 2](Expenses Policy - August 2026.pdf))"). Just cite the number like "[1]".
 If the information doesn't directly answer the question, briefly explain what was found and how it relates.`;
               } else {
                 addLog("WARNING: No results found in knowledge base.");
@@ -1305,7 +1309,7 @@ If the information doesn't directly answer the question, briefly explain what wa
                 <BotAvatar size="sm" isThinking={false} />
               )}
             </div>
-            <div className={cn("max-w-[85%] p-4 rounded-2xl text-sm shadow-sm leading-relaxed", msg.role === "user" ? "bg-oca-blue text-white rounded-tr-none" : "bg-white text-gray-800 rounded-tl-none border border-gray-100")}>
+            <div className={cn("chat-message-bubble max-w-[85%] p-4 rounded-2xl text-sm shadow-sm leading-relaxed", msg.role === "user" ? "bg-oca-blue text-white rounded-tr-none" : "bg-white text-gray-800 rounded-tl-none border border-gray-100")}>
               {msg.files && msg.files.length > 0 && (
                 <div className="mb-2 space-y-1">
                   {msg.files.map((f, idx) => (
@@ -1325,42 +1329,18 @@ If the information doesn't directly answer the question, briefly explain what wa
               <div className={cn("prose prose-sm max-w-none", msg.role === "user" ? "prose-invert" : "text-gray-800")}>
                 <ReactMarkdown
                   components={{
-                    a: ({ node, ...props }) => <a target="_blank" rel="noopener noreferrer" {...props} />
+                    a: ({ node, href, children, ...props }) => {
+                      if (href && href.startsWith("#cite-")) {
+                        const num = parseInt(href.replace("#cite-", ""), 10);
+                        const source = msg.sources && msg.sources[num - 1];
+                        return <CitationDot number={num} source={source} inline={true} />;
+                      }
+                      return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>;
+                    }
                   }}
-                >{msg.parts[0].text}</ReactMarkdown>
+                >{preprocessCitationMarkdown(msg.parts[0].text, msg.sources)}</ReactMarkdown>
               </div>
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-gray-100">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Sources</p>
-                  <div className="space-y-2">
-                    {msg.sources.map((source, idx) => (
-                      <div key={idx} className="group/source relative">
-                        <div className="flex items-center gap-1.5 text-[10px] text-indigo-600 font-medium bg-indigo-50 px-2 py-1 rounded-md cursor-help">
-                          <BookOpen size={10} />
-                          <span className="truncate">{source.fileName}</span>
-                          {source.unit && <span className="text-[8px] bg-indigo-200 px-1 rounded">{source.unit}</span>}
-                          {source.url && (
-                            <a 
-                              href={source.url} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="ml-1 p-0.5 hover:bg-indigo-100 rounded transition-colors"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <ExternalLink size={8} />
-                            </a>
-                          )}
-                        </div>
-                        <div className="hidden group-hover/source:block absolute bottom-full left-0 mb-2 w-64 p-3 bg-gray-900 text-white text-[10px] rounded-xl shadow-2xl z-50 leading-relaxed border border-gray-800">
-                          <div className="font-bold text-indigo-400 mb-1 border-b border-gray-800 pb-1">{source.fileName}</div>
-                          {source.text}
-                          <div className="absolute bottom-[-6px] left-4 w-3 h-3 bg-gray-900 rotate-45 border-r border-b border-gray-800"></div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <SourcesFooter sources={msg.sources} />
               <MessageFilesAndCarousel msg={msg} previousMsg={i > 0 ? messages[i - 1] : undefined} />
             </div>
           </div>

@@ -247,6 +247,7 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
           userId: uid,
           title: `Session of ${formattedDate}`,
           dateKey: todayKey,
+          source: "lumen",
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         };
@@ -281,6 +282,7 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
       userId: uid,
       title: sessionTitle,
       dateKey: todayKey,
+      source: "lumen",
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     };
@@ -337,9 +339,9 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
       });
       
       combined.sort((a: any, b: any) => {
-        const t1 = a.createdAt?.seconds || a.createdAt?.getTime?.() || 0;
-        const t2 = b.createdAt?.seconds || b.createdAt?.getTime?.() || 0;
-        return t2 - t1; // Descending order
+        const t1 = a.updatedAt?.seconds || a.updatedAt?.getTime?.() || a.createdAt?.seconds || a.createdAt?.getTime?.() || 0;
+        const t2 = b.updatedAt?.seconds || b.updatedAt?.getTime?.() || b.createdAt?.seconds || b.createdAt?.getTime?.() || 0;
+        return t2 - t1;
       });
       
       setSessions(combined);
@@ -955,6 +957,12 @@ If the information doesn't directly answer the question, briefly explain what wa
           const modelDoc = await addDoc(collection(db, "chat_history"), modelDocData);
           console.log("Lumen message saved with ID:", modelDoc.id);
 
+          if (currentSessionId && !currentSessionId.startsWith("legacy-") && currentSessionId !== "default") {
+            updateDoc(doc(db, "chat_sessions", currentSessionId), {
+              updatedAt: serverTimestamp()
+            }).catch((e) => console.error("Could not bump session updatedAt:", e));
+          }
+
           // Auto-generate session title if current session has the default name format
           const isSessionTitleDefault = currentSession && currentSession.title && currentSession.title.startsWith("Session of");
           if (currentSessionId && isSessionTitleDefault) {
@@ -1115,6 +1123,22 @@ If the information doesn't directly answer the question, briefly explain what wa
                 {currentSession ? currentSession.title : "New Session"}
               </span>
               {currentSession && (
+                <span
+                  className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                    currentSession.source === "staff-assistant"
+                      ? "bg-oca-verdigris/15 text-oca-verdigris"
+                      : "bg-oca-cerulean/15 text-oca-cerulean"
+                  }`}
+                  title={
+                    currentSession.source === "staff-assistant"
+                      ? "Started in Staff Assistant — continuing here uses Lumen"
+                      : "Started in Lumen Chat"
+                  }
+                >
+                  {currentSession.source === "staff-assistant" ? "Staff" : "Lumen"}
+                </span>
+              )}
+              {currentSession && (
                 <button
                   onClick={() => {
                     setEditTitleValue(currentSession.title || "");
@@ -1196,7 +1220,18 @@ If the information doesn't directly answer the question, briefly explain what wa
                       onClick={() => handleSelectSession(sess)}
                     >
                       <div className="flex flex-col min-w-0 flex-1">
-                        <span className="text-xs font-bold truncate">{sess.title}</span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-bold truncate">{sess.title}</span>
+                          <span
+                            className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                              sess.source === "staff-assistant"
+                                ? "bg-oca-verdigris/15 text-oca-verdigris"
+                                : "bg-oca-cerulean/15 text-oca-cerulean"
+                            }`}
+                          >
+                            {sess.source === "staff-assistant" ? "Staff" : "Lumen"}
+                          </span>
+                        </div>
                         <span className="text-[9px] text-gray-400 font-bold uppercase tracking-wider mt-0.5">{dateDisplay}</span>
                       </div>
                       

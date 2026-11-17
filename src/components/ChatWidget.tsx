@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { MessageCircle, X, Send, Paperclip, Loader2, User, Image as ImageIcon, FileAudio, Palette, BookOpen, ExternalLink, Bot, Edit2, Check, History, Plus } from "lucide-react";
+import { MessageCircle, X, Send, Paperclip, Loader2, User, Image as ImageIcon, FileAudio, Palette, BookOpen, ExternalLink, Bot, Edit2, Check, History, Plus, Sparkles } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { chatWithLumen, getMultimodalFeedback, generateSessionTitle } from "../lib/gemini";
@@ -15,6 +15,8 @@ import { LogIn, LogOut } from "lucide-react";
 import { saveCachedFile, getCachedFile, getMsgTimeKey } from "../lib/mediaCache";
 import MediaCarousel from "./MediaCarousel";
 import { CitationDot, SourcesFooter, preprocessCitationMarkdown } from "./CitationComponents";
+import { AudioToolsModal } from "./AudioToolsModal";
+import { AudioPlayerCard } from "./AudioPlayerCard";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -28,6 +30,14 @@ interface Message {
   files?: { data: string; mimeType: string; name: string }[];
   themeName?: string;
   sources?: { fileName: string; text: string; unit?: string; url?: string }[];
+  audioDoc?: {
+    id: string;
+    fileName: string;
+    audioUrl: string;
+    durationSeconds: number;
+    wordCount: number;
+    voiceName: string;
+  };
 }
 
 interface FeedbackTheme {
@@ -138,6 +148,40 @@ export default function ChatWidget({ forceOpen = false, isWidget = false }: { fo
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
   const [isSessionHistoryOpen, setIsSessionHistoryOpen] = useState(false);
+  const [isAudioToolsOpen, setIsAudioToolsOpen] = useState(false);
+
+  const handleAudioGeneratedForChat = async (audioDoc: any) => {
+    const textContent = `Here is the audio version of **${audioDoc.fileName}** read by ${audioDoc.voiceName} (${audioDoc.wordCount.toLocaleString()} words).`;
+    const newMsg: Message = {
+      role: "model",
+      parts: [{ text: textContent }],
+      createdAt: Timestamp.now(),
+      audioDoc: {
+        id: audioDoc.id,
+        fileName: audioDoc.fileName,
+        audioUrl: audioDoc.audioUrl,
+        durationSeconds: audioDoc.durationSeconds,
+        wordCount: audioDoc.wordCount,
+        voiceName: audioDoc.voiceName
+      }
+    };
+    setMessages(prev => [...prev, newMsg]);
+
+    if (auth.currentUser && currentSessionId) {
+      try {
+        await addDoc(collection(db, "chat_history"), {
+          userId: auth.currentUser.uid,
+          sessionId: currentSessionId,
+          role: "model",
+          parts: [{ text: textContent }],
+          audioDoc: newMsg.audioDoc,
+          createdAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.warn("Failed to persist audio document to chat history:", err);
+      }
+    }
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1158,20 +1202,32 @@ If the information doesn't directly answer the question, briefly explain what wa
           )}
         </div>
         
-        {/* Session switcher toggle button */}
-        <button
-          onClick={() => setIsSessionHistoryOpen(!isSessionHistoryOpen)}
-          className={cn(
-            "flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex-shrink-0",
-            isSessionHistoryOpen 
-              ? "bg-oca-blue text-white shadow-sm" 
-              : "bg-white hover:bg-oca-blue-tint/50 text-oca-blue border border-oca-blue/20"
-          )}
-          title="Past Sessions"
-        >
-          <History size={11} className="flex-shrink-0" />
-          <span>Sessions</span>
-        </button>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* AI Tools (Document to Audio) button */}
+          <button
+            onClick={() => setIsAudioToolsOpen(true)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex-shrink-0 bg-white hover:bg-oca-blue-tint/50 text-oca-blue border border-oca-blue/20 cursor-pointer shadow-2xs"
+            title="AI Tools: Convert Document to Audio"
+          >
+            <Sparkles size={11} className="flex-shrink-0 text-amber-500" />
+            <span>AI Tools</span>
+          </button>
+
+          {/* Session switcher toggle button */}
+          <button
+            onClick={() => setIsSessionHistoryOpen(!isSessionHistoryOpen)}
+            className={cn(
+              "flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex-shrink-0 cursor-pointer",
+              isSessionHistoryOpen 
+                ? "bg-oca-blue text-white shadow-sm" 
+                : "bg-white hover:bg-oca-blue-tint/50 text-oca-blue border border-oca-blue/20"
+            )}
+            title="Past Sessions"
+          >
+            <History size={11} className="flex-shrink-0" />
+            <span>Sessions</span>
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -1341,6 +1397,17 @@ If the information doesn't directly answer the question, briefly explain what wa
                 >{preprocessCitationMarkdown(msg.parts[0].text, msg.sources)}</ReactMarkdown>
               </div>
               <SourcesFooter sources={msg.sources} />
+              {msg.audioDoc && (
+                <div className="mt-3">
+                  <AudioPlayerCard
+                    title={msg.audioDoc.fileName}
+                    audioUrl={msg.audioDoc.audioUrl}
+                    durationSeconds={msg.audioDoc.durationSeconds}
+                    wordCount={msg.audioDoc.wordCount}
+                    voiceName={msg.audioDoc.voiceName}
+                  />
+                </div>
+              )}
               <MessageFilesAndCarousel msg={msg} previousMsg={i > 0 ? messages[i - 1] : undefined} />
             </div>
           </div>
@@ -1457,6 +1524,15 @@ If the information doesn't directly answer the question, briefly explain what wa
           </button>
         </div>
       </div>
+
+      <AudioToolsModal
+        isOpen={isAudioToolsOpen}
+        onClose={() => setIsAudioToolsOpen(false)}
+        userId={auth.currentUser?.uid || "guest-user"}
+        userEmail={auth.currentUser?.email || undefined}
+        isStaff={currentSession?.source === "staff-assistant" || Boolean(auth.currentUser?.email?.endsWith("@oca.ac.uk"))}
+        onAudioGeneratedForChat={handleAudioGeneratedForChat}
+      />
     </div>
   );
 

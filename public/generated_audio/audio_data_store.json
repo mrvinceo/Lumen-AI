@@ -1,0 +1,16 @@
+{
+  "quotas": {
+    "ZqpJke7dXaXj4aKsBdLycqIiXgK2": {
+      "userId": "ZqpJke7dXaXj4aKsBdLycqIiXgK2",
+      "userEmail": "paulvincent@oca.ac.uk",
+      "isStaff": true,
+      "todayKey": "2026-10-31",
+      "monthKey": "2026-10",
+      "dailyCount": 1,
+      "monthlyCount": 1,
+      "totalWordsProcessed": 17,
+      "lastRequestedAt": "2026-10-31T15:44:57.081Z"
+    }
+  },
+  "documents": {}
+}

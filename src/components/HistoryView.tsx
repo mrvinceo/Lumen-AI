@@ -11,6 +11,7 @@ import { jsPDF } from "jspdf";
 import { getCachedFile, getMsgTimeKey } from "../lib/mediaCache";
 import MediaCarousel from "./MediaCarousel";
 import { CitationDot, SourcesFooter, preprocessCitationMarkdown } from "./CitationComponents";
+import { AudioPlayerCard } from "./AudioPlayerCard";
 
 interface HistoryMessage {
   id: string;
@@ -21,6 +22,14 @@ interface HistoryMessage {
   sources?: any[];
   sessionId?: string;
   files?: { name: string; mimeType: string; data?: string }[];
+  audioDoc?: {
+    id: string;
+    fileName: string;
+    audioUrl: string;
+    durationSeconds: number;
+    wordCount: number;
+    voiceName: string;
+  };
 }
 
 interface StudySchedule {
@@ -830,6 +839,17 @@ export default function HistoryView() {
                               >{preprocessCitationMarkdown(msg.parts[0]?.text || "", msg.sources)}</ReactMarkdown>
                             </div>
                             <SourcesFooter sources={msg.sources} />
+                            {msg.audioDoc && (
+                              <div className="mt-3">
+                                <AudioPlayerCard
+                                  title={msg.audioDoc.fileName}
+                                  audioUrl={msg.audioDoc.audioUrl}
+                                  durationSeconds={msg.audioDoc.durationSeconds}
+                                  wordCount={msg.audioDoc.wordCount}
+                                  voiceName={msg.audioDoc.voiceName}
+                                />
+                              </div>
+                            )}
                             <MessageFilesAndCarousel msg={msg} previousMsg={idx > 0 ? arr[idx - 1] : undefined} />
                             <div className={`mt-3 text-[10px] font-bold uppercase tracking-widest opacity-40 ${msg.role === "user" ? "text-right" : ""}`}>
                               {msg.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

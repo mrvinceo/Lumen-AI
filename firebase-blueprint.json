@@ -145,6 +145,42 @@
         "ltiEnabled": { "type": "boolean", "description": "Whether this activity is enabled for LTI 1.3 deep linking selection." }
       },
       "required": ["name", "personaIds", "createdAt"]
+    },
+    "AudioDocument": {
+      "title": "Audio Document",
+      "description": "A converted audio version of an uploaded document.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique audio document ID." },
+        "userId": { "type": "string", "description": "The user ID who generated the audio." },
+        "userEmail": { "type": "string", "description": "User email address." },
+        "fileName": { "type": "string", "description": "Source document filename." },
+        "fileType": { "type": "string", "description": "File extension." },
+        "wordCount": { "type": "number", "description": "Number of words converted." },
+        "voiceId": { "type": "string", "description": "Selected Google TTS voice ID." },
+        "voiceName": { "type": "string", "description": "Display name of selected voice." },
+        "audioUrl": { "type": "string", "description": "URL to the generated MP3 file." },
+        "durationSeconds": { "type": "number", "description": "Audio duration in seconds." },
+        "status": { "type": "string", "enum": ["completed", "processing", "failed"], "description": "Conversion status." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp." }
+      },
+      "required": ["id", "userId", "fileName", "audioUrl"]
+    },
+    "AudioQuota": {
+      "title": "Audio Quota",
+      "description": "Daily and monthly usage quota tracking for document-to-audio conversions.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User ID." },
+        "userEmail": { "type": "string", "description": "User email." },
+        "isStaff": { "type": "boolean", "description": "Whether user is staff with unlimited quota." },
+        "todayKey": { "type": "string", "description": "Current date YYYY-MM-DD." },
+        "dailyCount": { "type": "number", "description": "Requests made today." },
+        "monthKey": { "type": "string", "description": "Current month YYYY-MM." },
+        "monthlyCount": { "type": "number", "description": "Requests made this month." },
+        "totalWordsProcessed": { "type": "number", "description": "Total words converted." }
+      },
+      "required": ["userId", "dailyCount", "monthlyCount"]
     }
   },
   "firestore": {
@@ -157,6 +193,8 @@
     "/stats/{statId}": { "schema": "DailyStats", "description": "Daily usage statistics." },
     "/personas/{personaId}": { "schema": "Persona", "description": "AI Persona configurations." },
     "/study_schedules/{scheduleId}": { "schema": "StudySchedule", "description": "Generated study schedules for Students." },
-    "/activities/{activityId}": { "schema": "Activity", "description": "Interactive AI Activities." }
+    "/activities/{activityId}": { "schema": "Activity", "description": "Interactive AI Activities." },
+    "/audio_documents/{docId}": { "schema": "AudioDocument", "description": "Generated audio documents." },
+    "/audio_quotas/{userId}": { "schema": "AudioQuota", "description": "Per-user audio generation quotas." }
   }
 }

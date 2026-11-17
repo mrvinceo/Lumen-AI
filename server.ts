@@ -18,6 +18,15 @@ import {
   saveDocumentAiConfig,
   createSemanticChunks 
 } from "./server/documentAiService";
+import {
+  UK_VOICES,
+  getUserAudioQuota,
+  getUserAudioHistory,
+  deleteUserAudioDocument,
+  processDocumentToAudio,
+  synthesizeTtsChunk,
+  extractDocumentText
+} from "./server/audioTtsService";
 
 dotenv.config();
 
@@ -2452,6 +2461,179 @@ async function startServer() {
         googleError: error.response?.data || null,
         stack: error.stack
       });
+    }
+  });
+
+  // --- Audio Document (TTS AI Tool) Routes ---
+  const audioDir = path.join(process.cwd(), "public", "generated_audio");
+  if (!fs.existsSync(audioDir)) {
+    fs.mkdirSync(audioDir, { recursive: true });
+  }
+  app.use("/generated_audio", express.static(audioDir));
+
+  // 1. Get available UK voices
+  app.get("/api/audio-tools/voices", (_req, res) => {
+    res.json({
+      success: true,
+      voices: UK_VOICES
+    });
+  });
+
+  // 2. Stream/Get voice preview sample
+  app.get("/api/audio-tools/sample/:voiceId", async (req, res) => {
+    try {
+      const { voiceId } = req.params;
+      const voice = UK_VOICES.find(v => v.id === voiceId) || UK_VOICES[0];
+      const sampleFileWav = path.join(audioDir, `sample_${voice.id}.wav`);
+      const sampleFileMp3 = path.join(audioDir, `sample_${voice.id}.mp3`);
+
+      if (fs.existsSync(sampleFileWav)) {
+        res.setHeader("Content-Type", "audio/wav");
+        return fs.createReadStream(sampleFileWav).pipe(res);
+      }
+      if (fs.existsSync(sampleFileMp3)) {
+        res.setHeader("Content-Type", "audio/mpeg");
+        return fs.createReadStream(sampleFileMp3).pipe(res);
+      }
+
+      const apiKey = getApiKey();
+      if (!apiKey) {
+        return res.status(500).json({ error: "Google API key is not configured" });
+      }
+
+      const result = await synthesizeTtsChunk(voice.sampleText, voice.id, apiKey);
+      const outPath = result.isWav ? sampleFileWav : sampleFileMp3;
+      fs.writeFileSync(outPath, result.buffer);
+
+      res.setHeader("Content-Type", result.mimeType || (result.isWav ? "audio/wav" : "audio/mpeg"));
+      res.send(result.buffer);
+    } catch (err: any) {
+      console.error("[AudioTTS] Voice sample error:", err);
+      res.status(500).json({ error: err.message || "Failed to generate voice sample" });
+    }
+  });
+
+  // 3. Get user quota status
+  app.get("/api/audio-tools/quota", async (req, res) => {
+    try {
+      const userId = safeString(req.query.userId);
+      const email = safeString(req.query.email);
+      const isStaffParam = req.query.isStaff === "true";
+
+      if (!userId) {
+        return res.status(400).json({ error: "Missing required parameter: userId" });
+      }
+
+      const quota = await getUserAudioQuota(userId, email, isStaffParam);
+      res.json(quota);
+    } catch (err: any) {
+      console.error("[AudioTTS] Quota check error:", err);
+      res.status(500).json({ error: err.message || "Failed to retrieve quota" });
+    }
+  });
+
+  // 3.5. Inspect document and get real word count
+  app.post("/api/audio-tools/inspect", async (req, res) => {
+    try {
+      const { fileBase64, fileName, mimeType } = req.body;
+      if (!fileBase64 || !fileName) {
+        return res.status(400).json({ error: "Missing required parameters (fileBase64, fileName)" });
+      }
+
+      const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, "");
+      const buffer = Buffer.from(cleanBase64, "base64");
+
+      const { text, wordCount } = await extractDocumentText(buffer, mimeType || "application/octet-stream", fileName);
+
+      const estimatedMinutes = Math.max(1, Math.round((wordCount / 140)));
+
+      res.json({
+        success: true,
+        wordCount,
+        characterCount: text.length,
+        estimatedMinutes,
+        snippet: text.substring(0, 300)
+      });
+    } catch (err: any) {
+      console.error("[AudioTTS] Inspect error:", err.message);
+      res.status(400).json({ error: err.message || "Failed to inspect document" });
+    }
+  });
+
+  // 4. Convert document to audio
+  app.post("/api/audio-tools/convert", async (req, res) => {
+    try {
+      const {
+        fileBase64,
+        fileName,
+        mimeType,
+        voiceId,
+        userId,
+        userEmail,
+        isStaff
+      } = req.body;
+
+      if (!fileBase64 || !fileName || !userId) {
+        return res.status(400).json({ error: "Missing required parameters (fileBase64, fileName, userId)" });
+      }
+
+      const apiKey = getApiKey();
+      if (!apiKey) {
+        return res.status(500).json({ error: "Google API key is not configured on the server." });
+      }
+
+      const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, "");
+      const fileBuffer = Buffer.from(cleanBase64, "base64");
+
+      const result = await processDocumentToAudio({
+        fileBuffer,
+        fileName,
+        mimeType: mimeType || "application/octet-stream",
+        voiceId: voiceId || UK_VOICES[0].id,
+        userId,
+        userEmail: userEmail || "",
+        isStaff: Boolean(isStaff),
+        apiKey
+      });
+
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.error("[AudioTTS] Conversion error:", err.message);
+      res.status(400).json({ error: err.message || "Failed to process document to audio" });
+    }
+  });
+
+  // 5. Get user audio document history
+  app.get("/api/audio-tools/history", async (req, res) => {
+    try {
+      const userId = safeString(req.query.userId);
+      if (!userId) {
+        return res.status(400).json({ error: "Missing required parameter: userId" });
+      }
+      const history = await getUserAudioHistory(userId);
+      res.json({ success: true, history });
+    } catch (err: any) {
+      console.error("[AudioTTS] History fetch error:", err);
+      res.status(500).json({ error: err.message || "Failed to fetch audio history" });
+    }
+  });
+
+  // 6. Delete user audio document
+  app.delete("/api/audio-tools/history/:docId", async (req, res) => {
+    try {
+      const { docId } = req.params;
+      const userId = safeString(req.query.userId);
+      if (!userId || !docId) {
+        return res.status(400).json({ error: "Missing userId or docId" });
+      }
+      const success = await deleteUserAudioDocument(userId, docId);
+      res.json({ success });
+    } catch (err: any) {
+      console.error("[AudioTTS] Delete error:", err);
+      res.status(500).json({ error: err.message || "Failed to delete audio file" });
     }
   });
 
